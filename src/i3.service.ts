@@ -53,8 +53,9 @@ export function moveToWindowWorkspace(windowId: number, workspaceId: string) {
 export function moveWindowToScratchPad(windowId: number) {
   const command = [
     "i3-msg",
-    `[id=${windowId}]`,
-    "move container to scratchpad",
+    `[con_id=${windowId}]`,
+    // "move container to scratchpad",
+    "move container to workspace scratch",
   ];
   const { stdout } = Bun.spawnSync(command);
   log("Moved window", windowId, "to scratchpad Result:", stdout.toString());

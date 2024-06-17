@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "MountTab",
+  "name": "Bench",
   "description": "Mount browser tabs to a working directory",
   "version": "1.0",
   "permissions": [

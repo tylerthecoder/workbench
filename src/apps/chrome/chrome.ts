@@ -10,77 +10,61 @@ type TabsMessage = Record<string, string[]>;
 
 const port = 3149;
 
-let bunServer: Server | undefined;
-let extentionWs: ServerWebSocket<unknown> | undefined;
-let onTabs: ((tabs: TabsMessage) => void) | undefined;
-
 const getTabs = async (): Promise<TabsMessage> => {
-  if (!bunServer) {
-    bunServer = Bun.serve({
-      port,
-      async fetch(req, server) {
-        console.log("Incoming request", req.url);
-        const url = new URL(req.url);
+  const id = Math.random().toString();
+  console.log("Getting tabs", id);
+  let tabs: TabsMessage | null = null;
+  const bunServer = Bun.serve({
+    port,
+    async fetch(req, server) {
+      const url = new URL(req.url);
 
-        if (url.pathname === "/ws") {
-          if (server.upgrade(req)) {
-            return; // do not return a Response
-          }
-          return new Response("Upgrade failed :(", { status: 500 });
+      console.log("Request", url.pathname, id);
+
+      if (url.pathname === "/tabs") {
+        if (tabs) {
+          return new Response("OK");
         }
-      },
-      websocket: {
-        async message(_ws, message) {
-          const parsed = JSON.parse(
-            typeof message === "string" ? message : message.toString(),
-          ) as { tabs: Record<string, string[]> };
+        const receivedTabs = JSON.parse(await req.text()) as TabsMessage;
+        console.log("Received tabs", id);
+        tabs = receivedTabs;
+        return new Response("OK");
+      }
+    },
+    websocket: {
+      message(ws, message) {}, // a message is received
+      open(ws) {}, // a socket is opened
+      close(ws, code, message) {}, // a socket is closed
+      drain(ws) {}, // the socket is ready to receive more data
+    },
+  });
 
-          if (parsed.tabs) {
-            const { tabs } = parsed;
-
-            onTabs?.(tabs);
-          }
-        },
-        open(_ws) {
-          console.log("Extension connected");
-          extentionWs = _ws;
-        },
-        close(_ws) {
-          console.log("Extension disconnected");
-        },
-      },
-    });
-  }
-
-  if (!extentionWs) {
-    console.log("Extension not connected, waiting");
-    // wait for the extension to connect
-    await new Promise<void>((resolve) => {
-      // Start a 5 second timer
-      setTimeout(() => {
-        console.log("extension connection timeout");
+  let timeout: Timer | undefined;
+  let interval: Timer | undefined;
+  // wait for the extension to connect
+  await new Promise<void>((resolve) => {
+    timeout = setTimeout(() => {
+      console.log("extension connection timeout", id);
+      resolve();
+    }, 3000);
+    interval = setInterval(() => {
+      if (tabs) {
+        clearInterval(interval);
         resolve();
-      }, 10000);
-      const interval = setInterval(() => {
-        if (extentionWs) {
-          clearInterval(interval);
-          resolve();
-        }
-      }, 1000);
-    });
-  }
+      }
+    }, 500);
+  });
+  clearInterval(interval);
+  clearTimeout(timeout);
 
-  if (!extentionWs) {
+  if (!tabs) {
+    console.error("Extension did not connect", id);
     return {};
   }
 
-  extentionWs.send(JSON.stringify({ getTabs: true }));
+  bunServer.stop(true);
 
-  return await new Promise<TabsMessage>((resolve) => {
-    onTabs = (tabs) => {
-      resolve(tabs);
-    };
-  });
+  return tabs;
 };
 
 export async function launchApp(app: App<AppState>) {
@@ -95,6 +79,8 @@ export async function launchApp(app: App<AppState>) {
   const newWindowIds = Object.keys(newTabs);
 
   const diffWindowIds = newWindowIds.filter((id) => !oldWindowIds.includes(id));
+
+  console.log("Diff window ids", diffWindowIds);
 
   if (diffWindowIds?.length > 1) {
     throw new Error("Too many new windows");
@@ -117,4 +103,8 @@ export async function syncApp(app: App<AppState>) {
   const myTabs = tabDict[app.data.chromeWindowId] ?? [];
   console.log("Got tabs", myTabs);
   app.data.urls = myTabs;
+}
+
+export async function close() {
+  bunServer?.stop();
 }

@@ -1,4 +1,4 @@
-# bench
+# Bench
 
 To install dependencies:
 
@@ -7,10 +7,9 @@ bun install
 ```
 
 To run:
-
 ```bash
-bun run script.ts
+bun run build.ts
+
+./out/bench
 ```
 
-This project was created using `bun init` in bun v1.0.30. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
-# workbench

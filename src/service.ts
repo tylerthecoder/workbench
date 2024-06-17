@@ -59,6 +59,11 @@ export async function getAllWorkspaces() {
   return workspaces.map((w) => w.name);
 }
 
+export async function getOpenedWorkspace() {
+  const workspaces = await getFromFs();
+  return workspaces.find((w) => w.isOpened);
+}
+
 export async function selectWorkspace(workspaceName: string) {
   console.log("Selecting workspace", workspaceName);
   const workspaces = await getFromFs();
