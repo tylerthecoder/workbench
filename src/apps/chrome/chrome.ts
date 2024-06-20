@@ -10,25 +10,32 @@ type TabsMessage = Record<string, string[]>;
 
 const port = 3149;
 
-const getTabs = async (): Promise<TabsMessage> => {
-  const id = Math.random().toString();
-  console.log("Getting tabs", id);
+// Will be called by a daemon
+export async function startServer() {
   let tabs: TabsMessage | null = null;
-  const bunServer = Bun.serve({
+  Bun.serve({
     port,
     async fetch(req, server) {
       const url = new URL(req.url);
 
-      console.log("Request", url.pathname, id);
+      console.log("Request", url.pathname);
 
       if (url.pathname === "/tabs") {
         if (tabs) {
           return new Response("OK");
         }
         const receivedTabs = JSON.parse(await req.text()) as TabsMessage;
-        console.log("Received tabs", id);
+        console.log("Received tabs");
         tabs = receivedTabs;
         return new Response("OK");
+      } else if (url.pathname == "/get-tabs") {
+        // wait for fresh tabs
+        tabs = null;
+        while (!tabs) {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+
+        return new Response(JSON.stringify(tabs ?? {}));
       }
     },
     websocket: {
@@ -38,32 +45,11 @@ const getTabs = async (): Promise<TabsMessage> => {
       drain(ws) {}, // the socket is ready to receive more data
     },
   });
+}
 
-  let timeout: Timer | undefined;
-  let interval: Timer | undefined;
-  // wait for the extension to connect
-  await new Promise<void>((resolve) => {
-    timeout = setTimeout(() => {
-      console.log("extension connection timeout", id);
-      resolve();
-    }, 3000);
-    interval = setInterval(() => {
-      if (tabs) {
-        clearInterval(interval);
-        resolve();
-      }
-    }, 500);
-  });
-  clearInterval(interval);
-  clearTimeout(timeout);
-
-  if (!tabs) {
-    console.error("Extension did not connect", id);
-    return {};
-  }
-
-  bunServer.stop(true);
-
+const getTabs = async (): Promise<TabsMessage> => {
+  const tabsRes = await fetch(`http://localhost:${port}/get-tabs`);
+  const tabs = (await tabsRes.json()) as TabsMessage;
   return tabs;
 };
 

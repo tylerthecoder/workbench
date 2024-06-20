@@ -3,7 +3,7 @@ Description=Run bench sync
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/bench sync-loop
+ExecStart=/usr/local/bin/bench daemon
 
 [Install]
 WantedBy=multi-user.target

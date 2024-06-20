@@ -10,6 +10,7 @@ function printHelp() {
   console.log("  read-state");
   console.log("  read-config");
   console.log("  sync");
+  console.log("  daemon");
   console.log("  new <workspace>");
   console.log("  logs");
 }
@@ -30,8 +31,8 @@ switch (command) {
   case "sync":
     await Service.sync();
     break;
-  case "sync-loop":
-    await Service.syncLoop();
+  case "daemon":
+    await Service.daemon();
     break;
   case "read-config":
     const config = Service.getConfig();

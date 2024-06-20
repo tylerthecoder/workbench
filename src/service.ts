@@ -1,4 +1,4 @@
-import { launchApp, syncApp } from "./apps/chrome/chrome.ts";
+import { launchApp, startServer, syncApp } from "./apps/chrome/chrome.ts";
 import * as I3Service from "./i3.service.ts";
 
 export type Config = {
@@ -174,7 +174,9 @@ export async function sync() {
   saveToFs(workspaces);
 }
 
-export async function syncLoop() {
+export async function daemon() {
+  startServer();
+
   while (true) {
     await sync();
     await new Promise((resolve) => setTimeout(resolve, 1000));
