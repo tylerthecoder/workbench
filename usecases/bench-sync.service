@@ -1,0 +1,10 @@
+[Unit]
+Description=Run bench sync
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bench sync-loop
+
+[Install]
+WantedBy=multi-user.target
+

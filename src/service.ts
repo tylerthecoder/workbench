@@ -173,3 +173,28 @@ export async function sync() {
 
   saveToFs(workspaces);
 }
+
+export async function syncLoop() {
+  while (true) {
+    await sync();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+export async function newWorkspace(name: string) {
+  const workspaces = await getFromFs();
+
+  // Check if workspace already exists
+  if (workspaces.find((w) => w.name === name)) {
+    console.error(`Workspace ${name} already exists`);
+    return;
+  }
+
+  workspaces.push({
+    name,
+    isOpened: false,
+    apps: [],
+  });
+
+  saveToFs(workspaces);
+}
