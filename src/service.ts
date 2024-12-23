@@ -1,4 +1,6 @@
-import { launchApp, startServer, syncApp } from "./apps/chrome/chrome.ts";
+import { ChromeApp, type AppState as ChromeAppState } from "./apps/chrome/chrome.ts";
+import { TmuxApp, type AppState as TmuxAppState } from "./apps/tmux/tmux-app.ts";
+type AppState = ChromeAppState | TmuxAppState;
 import * as I3Service from "./i3.service.ts";
 
 export type Config = {
@@ -23,6 +25,7 @@ const isOpened = <T>(app: App<T>): app is OpenedApp<T> => {
 
 export type Workspace = {
   name: string;
+  folder: string;
   isOpened: boolean;
   apps: App<any>[];
 };
@@ -57,6 +60,23 @@ async function saveToFs(workspaces: Workspace[]) {
 export async function getAllWorkspaces() {
   const workspaces = await getFromFs();
   return workspaces.map((w) => w.name);
+}
+
+export async function getAllPossibleWorkspaces() {
+  const workspaces = await getFromFs();
+  // Get all possible workspaces from ~/dev folders
+  const home = process.env.HOME ?? '';
+  const devFolders = Bun.spawnSync(['ls', '-l', `${home}/dev`]).stdout.toString();
+  const possibleWorkspaces = devFolders
+    .split('\n')
+    .filter(line => line.startsWith('d'))
+    .map(line => line.split(' ').pop())
+    .filter(Boolean);
+
+  // Combine existing workspaces with possible workspaces
+  const allWorkspaces = [...new Set([...workspaces.map(w => w.name), ...possibleWorkspaces])];
+
+  return allWorkspaces;
 }
 
 export async function getOpenedWorkspace() {
@@ -105,7 +125,7 @@ export async function selectWorkspace(workspaceName: string) {
   saveToFs(workspaces);
 }
 
-async function openApp<T>(app: App<T>): Promise<OpenedApp<T>> {
+async function openApp<T extends AppState>(app: App<T>): Promise<OpenedApp<T>> {
   const prevWindowIds = I3Service.findNodeIdsByClass(
     I3Service.getTree(),
     "Chromium",
@@ -117,12 +137,15 @@ async function openApp<T>(app: App<T>): Promise<OpenedApp<T>> {
       return app;
     } else {
       console.log("App is opened but window is not found. Removing id.");
-      (app as any).i3WindowId = undefined;
+      const { i3WindowId, ...rest } = app;
+      return rest as OpenedApp<T>;
     }
   }
 
   if (app.name === "chrome") {
-    await launchApp(app as any);
+    await ChromeApp.openApp(app as App<ChromeAppState>);
+  } else if (app.name === "tmux") {
+    await TmuxApp.openApp(app as App<TmuxAppState>);
   }
 
   const nextWindowIds = I3Service.findNodeIdsByClass(
@@ -145,8 +168,10 @@ async function openApp<T>(app: App<T>): Promise<OpenedApp<T>> {
 
   console.log("Found new I3 window", newWindowId);
 
-  const openedApp = app as OpenedApp<T>;
-  openedApp.i3WindowId = newWindowId;
+  const openedApp: OpenedApp<T> = {
+    ...app,
+    i3WindowId: newWindowId,
+  };
   return openedApp;
 }
 
@@ -154,20 +179,20 @@ export async function sync() {
   console.log("Syncing workspaces");
   const workspaces = await getFromFs();
 
-  const openededWorkspaces = workspaces.filter((w) => w.isOpened);
+  const openedWorkspaces = workspaces.filter((w) => w.isOpened);
 
-  if (openededWorkspaces.length !== 1) {
+  if (openedWorkspaces.length !== 1) {
     console.log(
       "Expected 1 opened workspace, found",
-      openededWorkspaces.length,
+      openedWorkspaces.length,
     );
   }
 
-  const openedWorkspace = openededWorkspaces[0];
+  const openedWorkspace = openedWorkspaces[0];
 
   for (const app of openedWorkspace.apps) {
     if (app.name === "chrome") {
-      await syncApp(app as any);
+      await ChromeApp.syncApp(app as App<ChromeAppState>);
     }
   }
 
@@ -175,7 +200,7 @@ export async function sync() {
 }
 
 export async function daemon() {
-  startServer();
+  ChromeApp.startServer();
 
   while (true) {
     await sync();
@@ -183,7 +208,21 @@ export async function daemon() {
   }
 }
 
+export async function removeWorkspace(name: string) {
+  console.log("Removing workspace", name);
+  const workspaces = await getFromFs();
+  const workspaceIndex = workspaces.findIndex((w) => w.name === name);
+  if (workspaceIndex === -1) {
+    console.error(`Workspace ${name} not found`);
+    return;
+  }
+  workspaces.splice(workspaceIndex, 1);
+  await saveToFs(workspaces);
+  console.log("Workspace removed");
+}
+
 export async function newWorkspace(name: string) {
+  console.log("Creating new workspace", name);
   const workspaces = await getFromFs();
 
   // Check if workspace already exists
@@ -195,8 +234,18 @@ export async function newWorkspace(name: string) {
   workspaces.push({
     name,
     isOpened: false,
-    apps: [],
+    apps: [
+      {
+        name: "chrome",
+        i3Workspace: "3",
+        data: {
+          urls: ["https://google.com"],
+          chromeWindowId: "",
+        },
+      },
+    ],
   });
 
-  saveToFs(workspaces);
+  await saveToFs(workspaces);
+  console.log("Workspace created");
 }

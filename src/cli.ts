@@ -12,6 +12,7 @@ function printHelp() {
   console.log("  sync");
   console.log("  daemon");
   console.log("  new <workspace>");
+  console.log("  remove <workspace>");
   console.log("  logs");
 }
 
@@ -23,6 +24,10 @@ switch (command) {
   case "list-workspaces":
     const worksapces = await Service.getAllWorkspaces();
     console.log(worksapces.join("\n"));
+    break;
+  case "list-possible-workspaces":
+    const possibleWorkspaces = await Service.getAllPossibleWorkspaces();
+    console.log(possibleWorkspaces.join("\n"));
     break;
   case "read-state":
     const state = await Service.getFromFs();
@@ -41,6 +46,11 @@ switch (command) {
   case "new": {
     const workspaceName = process.argv[3];
     await Service.newWorkspace(workspaceName);
+    break;
+  }
+  case "remove": {
+    const workspaceName = process.argv[3];
+    await Service.removeWorkspace(workspaceName);
     break;
   }
   case "logs":

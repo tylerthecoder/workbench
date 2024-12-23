@@ -1,7 +1,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { App } from "../../service";
 
-type AppState = {
+export type AppState = {
   urls: string[];
   chromeWindowId: string;
 };
@@ -53,7 +53,7 @@ const getTabs = async (): Promise<TabsMessage> => {
   return tabs;
 };
 
-export async function launchApp(app: App<AppState>) {
+async function openApp(app: App<AppState>) {
   const oldTabs = await getTabs();
 
   const command = ["chromium", "--new-window", ...app.data.urls];
@@ -82,8 +82,7 @@ export async function launchApp(app: App<AppState>) {
   app.data.chromeWindowId = newWindowId;
 }
 
-// Request the chrome tabs and update them
-export async function syncApp(app: App<AppState>) {
+async function syncApp(app: App<AppState>) {
   console.log("Syncing app", app.name);
   const tabDict = await getTabs();
   const myTabs = tabDict[app.data.chromeWindowId] ?? [];
@@ -91,6 +90,8 @@ export async function syncApp(app: App<AppState>) {
   app.data.urls = myTabs;
 }
 
-export async function close() {
-  bunServer?.stop();
-}
+export const ChromeApp = {
+  openApp,
+  syncApp,
+  startServer
+};
