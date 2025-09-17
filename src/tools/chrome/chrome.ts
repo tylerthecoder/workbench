@@ -1,8 +1,12 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { App } from "../../service";
 
-export type AppState = {
+
+export type ChromeAppState = {
   urls: string[];
+}
+
+export type ChromeAppOpenedState = {
   chromeWindowId: string;
 };
 
@@ -11,7 +15,7 @@ type TabsMessage = Record<string, string[]>;
 const port = 3149;
 
 // Will be called by a daemon
-export async function startServer() {
+async function startServer() {
   let tabs: TabsMessage | null = null;
   Bun.serve({
     port,
@@ -39,10 +43,10 @@ export async function startServer() {
       }
     },
     websocket: {
-      message(ws, message) {}, // a message is received
-      open(ws) {}, // a socket is opened
-      close(ws, code, message) {}, // a socket is closed
-      drain(ws) {}, // the socket is ready to receive more data
+      message(ws, message) { }, // a message is received
+      open(ws) { }, // a socket is opened
+      close(ws, code, message) { }, // a socket is closed
+      drain(ws) { }, // the socket is ready to receive more data
     },
   });
 }
@@ -53,10 +57,10 @@ const getTabs = async (): Promise<TabsMessage> => {
   return tabs;
 };
 
-async function openApp(app: App<AppState>) {
+async function openApp(appState: ChromeAppState): Promise<ChromeAppOpenedState> {
   const oldTabs = await getTabs();
 
-  const command = ["chromium", "--new-window", ...app.data.urls];
+  const command = ["chromium", "--new-window", ...appState.urls];
   Bun.spawnSync(command);
 
   const newTabs = await getTabs();
@@ -79,7 +83,9 @@ async function openApp(app: App<AppState>) {
     throw new Error("No new window found");
   }
 
-  app.data.chromeWindowId = newWindowId;
+  return {
+    chromeWindowId: newWindowId
+  };
 }
 
 async function syncApp(app: App<AppState>) {
@@ -91,6 +97,7 @@ async function syncApp(app: App<AppState>) {
 }
 
 export const ChromeApp = {
+  windowName: "Chromium",
   openApp,
   syncApp,
   startServer

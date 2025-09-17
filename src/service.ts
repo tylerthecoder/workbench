@@ -1,11 +1,8 @@
-import { ChromeApp, type AppState as ChromeAppState } from "./apps/chrome/chrome.ts";
-import { TmuxApp, type AppState as TmuxAppState } from "./apps/tmux/tmux-app.ts";
+import { ChromeApp, type AppState as ChromeAppState } from "./tools/chrome/chrome.ts";
+import { TmuxApp, type AppState as TmuxAppState } from "./tools/tmux/tmux-app.ts";
 type AppState = ChromeAppState | TmuxAppState;
 import * as I3Service from "./i3.service.ts";
 
-export type Config = {
-  stateFile: string;
-};
 
 export type BaseApp<T> = {
   name: string;
@@ -29,12 +26,6 @@ export type Workspace = {
   isOpened: boolean;
   apps: App<any>[];
 };
-
-export function getConfig(): Config {
-  return {
-    stateFile: "/home/tylord/docs/bench.json",
-  };
-}
 
 export async function getFromFs(): Promise<Workspace[]> {
   const { stateFile } = getConfig();

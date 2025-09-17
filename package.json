@@ -1,14 +1,14 @@
 {
-  "name": "bench",
-  "module": "script.ts",
-  "type": "module",
+  "dependencies": {
+    "bun": "^1.2.22"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
+  "module": "script.ts",
+  "name": "bench",
   "peerDependencies": {
     "typescript": "^5.0.0"
   },
-  "dependencies": {
-    "bun": "^1.1.12"
-  }
+  "type": "module"
 }
