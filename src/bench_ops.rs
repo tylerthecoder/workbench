@@ -1,476 +1,365 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::apps::{self, BenchTool, Tool};
-use crate::model::{Bench, BenchRuntime, CapturedBay, ToolDefault, ToolDefinition};
-use crate::runtime::{self, ToolRuntimeState};
+use crate::apps::{self, ToolKind};
+use crate::assembly::{self, AssemblyOutcome, ToolStatus};
+use crate::model::{AssembledBench, AssembledTool, BaySpec, Bench, ToolDefinition};
 use crate::storage;
 use crate::sway;
-use crate::sway::WindowInfo;
-use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
-pub struct BenchRuntimeReport {
+pub struct BenchReport {
     pub bench: Bench,
-    pub runtime: BenchRuntime,
-    pub tool_statuses: Vec<ToolRuntimeState>,
+    pub assembled: AssembledBench,
+    pub statuses: Vec<ToolStatus>,
 }
 
-pub fn create_bench(name: &str, benches_dir: &Path) -> Result<Bench> {
+#[derive(Debug, Clone)]
+pub struct BenchInfo {
+    pub bench: Bench,
+    pub assembled: bool,
+    pub active: bool,
+    pub statuses: Vec<ToolStatus>,
+}
+
+pub fn create_bench(name: &str) -> Result<Bench> {
     storage::ensure_dirs()?;
-    let bench = Bench {
-        name: name.to_string(),
-        tool_defaults: Vec::new(),
-    };
-    let path = resolve_bench_path(name, benches_dir);
+    let path = storage::bench_path(name);
     if path.exists() {
-        return Err(anyhow!(
-            "bench {} already exists at {}",
-            name,
-            path.display()
-        ));
-    }
-    save_bench(&path, &bench)?;
-    Ok(bench)
-}
-
-pub fn current_runtime_snapshot() -> Result<BenchRuntime> {
-    let windows = sway::current_windows()?;
-    let mut workspace_windows: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-    for window in &windows {
-        if let Some(ws) = &window.workspace {
-            if let Some(num) = parse_workspace_number(ws) {
-                workspace_windows
-                    .entry(num)
-                    .or_default()
-                    .push(window.id.clone());
-            }
-        }
+        anyhow::bail!("bench '{}' already exists", name);
     }
 
-    if workspace_windows.is_empty() {
-        return Ok(BenchRuntime {
-            name: "current".to_string(),
-            captured_bays: Vec::new(),
-        });
-    }
-
-    let tree = sway::get_tree()?;
-    let workspace_nums: BTreeSet<u32> = workspace_windows.keys().copied().collect();
-    let snapshots = sway::capture_workspace_snapshots(&tree, &workspace_nums);
-
-    let mut captured = Vec::new();
-    for bay in workspace_nums {
-        let mut window_ids = workspace_windows.remove(&bay).unwrap_or_default();
-        window_ids.sort();
-        let snapshot = snapshots.get(&bay).cloned().unwrap_or_default();
-        captured.push(CapturedBay {
-            bay,
-            name: snapshot.name,
-            window_ids,
-        });
-    }
-
-    Ok(BenchRuntime {
-        name: "current".to_string(),
-        captured_bays: captured,
-    })
-}
-
-pub fn default_data_dir() -> PathBuf {
-    let home = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").expect("HOME not set");
-            PathBuf::from(home).join(".local/share")
-        });
-    home.join("bench")
-}
-
-pub fn benches_dir_or_default(p: Option<PathBuf>) -> PathBuf {
-    p.unwrap_or_else(|| default_data_dir().join("benches"))
-}
-
-pub fn resolve_bench_path(target: &str, benches_dir: &Path) -> PathBuf {
-    let as_path = PathBuf::from(target);
-    if as_path.is_file() {
-        as_path
-    } else {
-        benches_dir.join(format!("{}.yml", target))
-    }
-}
-
-pub fn load_bench(path: &Path) -> Result<Bench> {
-    let data = std::fs::read_to_string(path)?;
-    let bench: Bench = serde_yaml::from_str(&data)?;
-    Ok(bench)
-}
-
-pub fn save_bench(path: &Path, bench: &Bench) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create benches dir {}", parent.display()))?;
-    }
-    let data = serde_yaml::to_string(bench)?;
-    std::fs::write(path, data)?;
-    Ok(())
-}
-
-pub fn list_benches(dir: &Path) -> Result<Vec<String>> {
-    let mut entries = vec![];
-    if dir.is_dir() {
-        for e in std::fs::read_dir(dir)? {
-            let e = e?;
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("yml") {
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    entries.push(stem.to_string());
-                }
-            }
-        }
-    }
-    entries.sort();
-    Ok(entries)
-}
-
-pub fn set_active_bench(name: &str, benches_dir: &Path) -> Result<()> {
-    let path = resolve_bench_path(name, benches_dir);
-    if !path.exists() {
-        return Err(anyhow!("bench {} not found at {}", name, path.display()));
-    }
-    runtime::set_active_bench(name)
-}
-
-pub fn assemble_active_bench(benches_dir: &Path) -> Result<BenchRuntimeReport> {
-    storage::ensure_dirs()?;
-    let (bench, mut bench_runtime) = load_active_bench(benches_dir)?;
-
-    ensure_workspace_labels(&bench.tool_defaults)?;
-    restore_captured_windows(&bench_runtime)?;
-
-    for default in &bench.tool_defaults {
-        let workspace = default.bay.to_string();
-        sway::ensure_workspace_visible(&workspace)?;
-        for tool_name in &default.tool_names {
-            let tool_def = load_tool_definition(tool_name)?;
-            let tool = instantiate_tool(&tool_def, default.bay);
-            let mut runtime_state = runtime::load_tool_runtime(tool_name)?;
-
-            let mut needs_launch = true;
-            if let Some(mut state) = runtime_state.take() {
-                if sway::container_exists(&state.container_id)? {
-                    sway::move_container_to_workspace(&state.container_id, &workspace)?;
-                    state.touch();
-                    runtime::save_tool_runtime(tool_name, &state)?;
-                    needs_launch = false;
-                } else {
-                    runtime::remove_tool_runtime(tool_name)?;
-                }
-            }
-
-            if needs_launch {
-                let (cid, debug_port) = launch_and_place_tool(&tool)?;
-                runtime::save_tool_runtime(tool_name, &ToolRuntimeState::new(cid, debug_port))?;
-            }
-        }
-    }
-
-    let statuses = gather_tool_statuses(&bench)?;
-    bench_runtime.captured_bays = capture_captured_bays(&statuses)?;
-    runtime::save_bench_runtime(&bench_runtime)?;
-
-    Ok(BenchRuntimeReport {
-        bench,
-        runtime: bench_runtime,
-        tool_statuses: statuses,
-    })
-}
-
-pub fn stow_active_bench(benches_dir: &Path) -> Result<BenchRuntimeReport> {
-    storage::ensure_dirs()?;
-    let (bench, mut bench_runtime) = load_active_bench(benches_dir)?;
-
-    for default in &bench.tool_defaults {
-        for tool_name in &default.tool_names {
-            let tool_def = load_tool_definition(tool_name)?;
-            let tool = instantiate_tool(&tool_def, default.bay);
-
-            let mut runtime_state = runtime::load_tool_runtime(tool_name)?;
-            if let Some(mut state) = runtime_state.take() {
-                if sway::container_exists(&state.container_id)? {
-                    let _ = sway::move_container_to_scratchpad(&state.container_id);
-                    state.touch();
-                    runtime::save_tool_runtime(tool_name, &state)?;
-                    continue;
-                } else {
-                    runtime::remove_tool_runtime(tool_name)?;
-                }
-            }
-
-            if let Some(cid) = sway::matching_container_ids(tool.sway_patterns())?
-                .into_iter()
-                .next()
-            {
-                let _ = sway::move_container_to_scratchpad(&cid);
-                runtime::save_tool_runtime(tool_name, &ToolRuntimeState::new(cid, None))?;
-            }
-        }
-    }
-
-    let statuses = gather_tool_statuses(&bench)?;
-    bench_runtime.captured_bays = capture_captured_bays(&statuses)?;
-    runtime::save_bench_runtime(&bench_runtime)?;
-
-    Ok(BenchRuntimeReport {
-        bench,
-        runtime: bench_runtime,
-        tool_statuses: statuses,
-    })
-}
-
-pub fn snapshot_current_as_bench(name: &str, benches_dir: &Path) -> Result<Bench> {
-    storage::ensure_dirs()?;
-    let (active_bench, _) = load_active_bench(benches_dir)?;
-    let statuses = gather_tool_statuses(&active_bench)?;
-
-    let mut workspace_tools: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-    for status in &statuses {
-        if let Some(actual) = status.actual_bay {
-            workspace_tools
-                .entry(actual)
-                .or_default()
-                .push(status.name.clone());
-        }
-    }
-
-    let workspace_nums: BTreeSet<u32> = workspace_tools.keys().copied().collect();
-    let snapshots = if workspace_nums.is_empty() {
-        BTreeMap::new()
-    } else {
-        let tree = sway::get_tree()?;
-        sway::capture_workspace_snapshots(&tree, &workspace_nums)
-    };
-
-    let mut defaults = Vec::new();
-    for bay in workspace_nums {
-        let mut tool_names = workspace_tools.remove(&bay).unwrap_or_default();
-        tool_names.sort();
-        let snapshot = snapshots.get(&bay).cloned().unwrap_or_default();
-        defaults.push(ToolDefault {
-            bay,
-            name: snapshot.name,
-            tool_names,
-        });
-    }
-
-    defaults.sort_by_key(|d| d.bay);
     let bench = Bench {
         name: name.to_string(),
-        tool_defaults: defaults,
+        bays: Vec::new(),
     };
-
-    let path = resolve_bench_path(name, benches_dir);
-    save_bench(&path, &bench)?;
+    storage::write_bench(&bench)?;
     Ok(bench)
 }
 
-fn load_active_bench(benches_dir: &Path) -> Result<(Bench, BenchRuntime)> {
-    match load_active_bench_optional(benches_dir)? {
-        Some(data) => Ok(data),
-        None => Err(anyhow!(
-            "no active bench is set; run `bench activate <name>` to mark one active"
-        )),
-    }
+pub fn list_benches() -> Result<Vec<String>> {
+    storage::ensure_dirs()?;
+    storage::list_bench_names()
 }
 
-fn load_active_bench_optional(benches_dir: &Path) -> Result<Option<(Bench, BenchRuntime)>> {
-    let Some(name) = runtime::get_active_bench()? else {
-        return Ok(None);
-    };
-    let path = resolve_bench_path(&name, benches_dir);
-    if !path.exists() {
-        return Err(anyhow!(
-            "active bench {} not found at {}; set a new bench with `bench assemble <name>`",
-            name,
-            path.display()
-        ));
-    }
-    let bench = load_bench(&path)?;
-    let runtime_state = runtime::load_bench_runtime(&bench.name)?;
-    Ok(Some((bench, runtime_state)))
+pub fn assemble(bench_name: &str) -> Result<BenchReport> {
+    storage::ensure_dirs()?;
+    let bench = storage::read_bench(bench_name)
+        .with_context(|| format!("failed to load bench '{}'", bench_name))?;
+
+    let existing = storage::read_assembled_bench(&bench.name)?.unwrap_or_default();
+    let outcome = assembly::assemble_bench(&bench, existing)?;
+    persist_assembly(&bench, &outcome)?;
+    storage::write_active_bench(&bench.name)?;
+
+    Ok(BenchReport {
+        bench,
+        assembled: outcome.assembled_bench,
+        statuses: outcome.statuses,
+    })
 }
 
-fn ensure_workspace_labels(defaults: &[ToolDefault]) -> Result<()> {
-    for default in defaults {
-        let workspace = default.bay.to_string();
-        sway::ensure_workspace_visible(&workspace)?;
-        if let Some(name) = default.name.as_deref() {
-            if !name.is_empty() {
-                sway::rename_workspace(&workspace, name)?;
-            }
-        }
-    }
-    Ok(())
-}
+pub fn info(bench_name: &str) -> Result<BenchInfo> {
+    storage::ensure_dirs()?;
+    let bench = storage::read_bench(bench_name)
+        .with_context(|| format!("failed to load bench '{}'", bench_name))?;
+    let active = storage::read_active_bench()?;
+    let is_active = active.as_deref() == Some(&bench.name);
 
-fn restore_captured_windows(runtime: &BenchRuntime) -> Result<()> {
-    for bay in &runtime.captured_bays {
-        let workspace = bay.bay.to_string();
-        sway::ensure_workspace_visible(&workspace)?;
-        if let Some(name) = bay.name.as_deref() {
-            if !name.is_empty() {
-                sway::rename_workspace(&workspace, name)?;
-            }
-        }
-        for window_id in &bay.window_ids {
-            if sway::container_exists(window_id)? {
-                sway::move_container_to_workspace(window_id, &workspace)?;
-            }
-        }
+    let tool_records = read_tool_records(&bench)?;
+    let mut window_index = HashMap::new();
+    for window in sway::current_windows()? {
+        window_index.insert(window.id.clone(), window);
     }
-    Ok(())
-}
-
-fn gather_tool_statuses(bench: &Bench) -> Result<Vec<ToolRuntimeStatus>> {
-    let windows = sway::current_windows()?;
-    let id_to_workspace = map_windows_to_workspaces(&windows);
 
     let mut statuses = Vec::new();
-    for default in &bench.tool_defaults {
-        for tool_name in &default.tool_names {
-            let runtime_state = runtime::load_tool_runtime(tool_name)?;
-            let (container_id, debug_port, last_opened) = if let Some(state) = runtime_state {
-                (
-                    Some(state.container_id.clone()),
-                    state.debug_port,
-                    Some(state.last_opened),
-                )
-            } else {
-                (None, None, None)
-            };
-            let actual_bay = container_id
+    let mut assembled = true;
+    for bay in &bench.bays {
+        for tool_name in &bay.tool_names {
+            let record = tool_records.get(tool_name);
+            let window_id = record.map(|r| r.window_id.clone());
+            let workspace = window_id
                 .as_ref()
-                .and_then(|cid| id_to_workspace.get(cid).copied());
-            statuses.push(ToolRuntimeStatus {
+                .and_then(|id| window_index.get(id))
+                .and_then(|info| info.workspace.clone());
+            let present = window_id
+                .as_ref()
+                .map(|id| window_index.contains_key(id))
+                .unwrap_or(false);
+            if !present {
+                assembled = false;
+            }
+            statuses.push(ToolStatus {
                 name: tool_name.clone(),
-                default_bay: default.bay,
-                actual_bay,
-                container_id,
-                debug_port,
-                last_opened,
+                bay: bay.name.clone(),
+                window_id,
+                workspace,
+                launched: false,
             });
         }
     }
 
-    statuses.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(statuses)
+    Ok(BenchInfo {
+        bench,
+        assembled,
+        active: is_active,
+        statuses,
+    })
 }
 
-fn capture_captured_bays(statuses: &[ToolRuntimeStatus]) -> Result<Vec<CapturedBay>> {
-    let mut workspace_windows: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-    for status in statuses {
-        if let (Some(bay), Some(cid)) = (status.actual_bay, &status.container_id) {
-            workspace_windows.entry(bay).or_default().push(cid.clone());
+pub fn stow(bench_name: &str) -> Result<BenchReport> {
+    storage::ensure_dirs()?;
+    let bench = storage::read_bench(bench_name)
+        .with_context(|| format!("failed to load bench '{}'", bench_name))?;
+
+    let existing = storage::read_assembled_bench(&bench.name)?.unwrap_or_default();
+    let mut outcome = assembly::assemble_bench(&bench, existing)?;
+    persist_assembly(&bench, &outcome)?;
+
+    let statuses =
+        assembly::stow_bench(&bench, &mut outcome.assembled_bench, &outcome.tool_records)?;
+    storage::write_assembled_bench(&bench.name, &outcome.assembled_bench)?;
+    storage::write_active_bench(&bench.name)?;
+
+    Ok(BenchReport {
+        bench,
+        assembled: outcome.assembled_bench,
+        statuses,
+    })
+}
+
+pub fn focus(bench_name: &str) -> Result<BenchReport> {
+    storage::ensure_dirs()?;
+    let bench = storage::read_bench(bench_name)
+        .with_context(|| format!("failed to load bench '{}'", bench_name))?;
+
+    let existing = storage::read_assembled_bench(&bench.name)?.unwrap_or_default();
+    let mut outcome = assembly::assemble_bench(&bench, existing)?;
+    persist_assembly(&bench, &outcome)?;
+
+    let statuses =
+        assembly::focus_bench(&bench, &mut outcome.assembled_bench, &outcome.tool_records)?;
+    storage::write_assembled_bench(&bench.name, &outcome.assembled_bench)?;
+    storage::write_active_bench(&bench.name)?;
+
+    Ok(BenchReport {
+        bench,
+        assembled: outcome.assembled_bench,
+        statuses,
+    })
+}
+
+pub fn assemble_tool(tool_name: &str, bay_override: Option<String>) -> Result<ToolStatus> {
+    storage::ensure_dirs()?;
+
+    let active = storage::read_active_bench()?;
+    let (bench, bay) = match active {
+        Some(name) => {
+            let bench = storage::read_bench(&name)
+                .with_context(|| format!("failed to load active bench '{}'", name))?;
+            if let Some(spec) = find_bay_for_tool(&bench, tool_name) {
+                (Some(bench), spec)
+            } else if let Some(name) = bay_override.clone() {
+                (
+                    Some(bench),
+                    BaySpec {
+                        name,
+                        tool_names: vec![tool_name.to_string()],
+                    },
+                )
+            } else {
+                anyhow::bail!(
+                    "tool '{}' is not part of the active bench '{}'; provide --bay to override",
+                    tool_name,
+                    name
+                );
+            }
         }
-    }
-
-    if workspace_windows.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let tree = sway::get_tree()?;
-    let workspace_nums: BTreeSet<u32> = workspace_windows.keys().copied().collect();
-    let snapshots = sway::capture_workspace_snapshots(&tree, &workspace_nums);
-
-    let mut captured = Vec::new();
-    for bay in workspace_nums {
-        let mut window_ids = workspace_windows.remove(&bay).unwrap_or_default();
-        window_ids.sort();
-        let snapshot = snapshots.get(&bay).cloned().unwrap_or_default();
-        captured.push(CapturedBay {
-            bay,
-            name: snapshot.name,
-            window_ids,
-        });
-    }
-    Ok(captured)
-}
-
-fn load_tool_definition(name: &str) -> Result<ToolDefinition> {
-    storage::ensure_tools_dir()?;
-    let path = storage::tool_path(name);
-    let data = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read tool definition {}", path.display()))?;
-    let def: ToolDefinition = serde_yaml::from_str(&data)
-        .with_context(|| format!("failed to parse tool definition {}", path.display()))?;
-    Ok(def)
-}
-
-fn instantiate_tool(def: &ToolDefinition, bay: u32) -> Tool {
-    Tool {
-        name: def.name.clone(),
-        kind: def.kind,
-        bay,
-        state: def.state.clone(),
-    }
-}
-
-fn launch_and_place_tool(tool: &Tool) -> Result<(String, Option<u16>)> {
-    let workspace = tool.bay().to_string();
-    let before = sway::matching_container_ids(tool.sway_patterns())?;
-
-    let debug_port = match tool.kind() {
-        apps::ToolKind::Browser => {
-            let port = reserve_local_port()?;
-            let config = tool.browser_config()?;
-            apps::browser::launch(&config, port)?;
-            Some(port)
-        }
-        apps::ToolKind::Terminal => {
-            let config = tool.terminal_config()?;
-            apps::terminal::launch(&config)?;
-            None
-        }
-        apps::ToolKind::Zed => {
-            let config = tool.zed_config()?;
-            apps::zed::launch(&config)?;
-            None
+        None => {
+            let bay_name = bay_override.ok_or_else(|| {
+                anyhow!(
+                    "no active bench set; use --bay to choose a Sway bay for '{}'",
+                    tool_name
+                )
+            })?;
+            (
+                None,
+                BaySpec {
+                    name: bay_name,
+                    tool_names: vec![tool_name.to_string()],
+                },
+            )
         }
     };
 
-    let cid = sway::wait_for_new_container(tool.sway_patterns(), &before, Duration::from_secs(10))?;
-    sway::move_container_to_workspace(&cid, &workspace)?;
-    Ok((cid, debug_port))
+    let (window_id, launched) = assembly::assign_tool_to_bay(tool_name, &bay)?;
+    storage::write_assembled_tool(
+        tool_name,
+        &AssembledTool {
+            window_id: window_id.clone(),
+        },
+    )?;
+
+    if let Some(bench) = bench {
+        let mut assembled = storage::read_assembled_bench(&bench.name)?.unwrap_or_default();
+        let entry = assembled
+            .bay_windows
+            .entry(bay.name.clone())
+            .or_insert_with(Vec::new);
+        if !entry.contains(&window_id) {
+            entry.push(window_id.clone());
+        }
+        storage::write_assembled_bench(&bench.name, &assembled)?;
+    }
+
+    let workspace = sway::current_windows()?
+        .into_iter()
+        .find(|info| info.id == window_id)
+        .and_then(|info| info.workspace);
+
+    Ok(ToolStatus {
+        name: tool_name.to_string(),
+        bay: bay.name,
+        window_id: Some(window_id),
+        workspace,
+        launched,
+    })
 }
 
-fn reserve_local_port() -> Result<u16> {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+pub fn sync_layout() -> Result<Bench> {
+    let active = storage::read_active_bench()?;
+    let name = active.ok_or_else(|| anyhow!("no active bench is set"))?;
+    let mut bench = storage::read_bench(&name)?;
+    let assembled = storage::read_assembled_bench(&name)?.unwrap_or_default();
+    let tool_records = read_tool_records(&bench)?;
+    let window_to_bay = invert_assembled(&assembled);
+
+    let mut new_bays = Vec::new();
+    for bay in &bench.bays {
+        let mut tools = Vec::new();
+        for (tool, record) in &tool_records {
+            if window_to_bay
+                .get(&record.window_id)
+                .map(|name| name == &bay.name)
+                .unwrap_or(false)
+            {
+                tools.push(tool.clone());
+            }
+        }
+
+        // Preserve tools without active windows in their existing bays.
+        for tool in &bay.tool_names {
+            if !tools.contains(tool) && !tool_records.contains_key(tool) {
+                tools.push(tool.clone());
+            }
+        }
+
+        let mut spec = bay.clone();
+        spec.tool_names = tools;
+        new_bays.push(spec);
+    }
+
+    bench.bays = new_bays;
+    storage::write_bench(&bench)?;
+    Ok(bench)
 }
 
-fn map_windows_to_workspaces(windows: &[WindowInfo]) -> HashMap<String, u32> {
-    let mut out = HashMap::new();
-    for window in windows {
-        if let Some(ws) = &window.workspace {
-            if let Some(num) = parse_workspace_number(ws) {
-                out.insert(window.id.clone(), num);
+pub fn sync_tool_state() -> Result<()> {
+    let active = storage::read_active_bench()?;
+    let name = active.ok_or_else(|| anyhow!("no active bench is set"))?;
+    let bench = storage::read_bench(&name)?;
+    let mut processed = BTreeSet::new();
+    for bay in &bench.bays {
+        for tool_name in &bay.tool_names {
+            if !processed.insert(tool_name.clone()) {
+                continue;
+            }
+            let mut definition = storage::read_tool(tool_name)?;
+            match definition.kind {
+                crate::apps::ToolKind::Browser => {
+                    let port = assembly::browser_debug_port(tool_name);
+                    if let Ok(urls) = crate::apps::browser::list_tabs(port) {
+                        definition.state = Some(crate::apps::ToolState::Browser(
+                            crate::apps::browser::Config { urls },
+                        ));
+                        storage::write_tool(&definition)?;
+                    }
+                }
+                _ => {
+                    // No dynamic state to sync for terminal/zed at the moment.
+                }
             }
         }
     }
-    out
+
+    Ok(())
 }
 
-fn parse_workspace_number(label: &str) -> Option<u32> {
-    let head = label.split(':').next().unwrap_or(label).trim();
-    if head.is_empty() {
-        return None;
+pub fn active_bench() -> Result<Option<String>> {
+    storage::read_active_bench()
+}
+
+pub fn craft_tool(kind: ToolKind, name: &str) -> Result<ToolDefinition> {
+    storage::ensure_dirs()?;
+    let path = storage::tool_path(name);
+    if path.exists() {
+        anyhow::bail!("tool '{}' already exists", name);
     }
-    head.parse::<u32>().ok()
+
+    let state = match kind {
+        ToolKind::Browser => Some(apps::ToolState::Browser(apps::browser::Config::default())),
+        ToolKind::Terminal => Some(apps::ToolState::Terminal(apps::terminal::Config::default())),
+        ToolKind::Zed => Some(apps::ToolState::Zed(apps::zed::Config::default())),
+    };
+
+    let definition = ToolDefinition {
+        name: name.to_string(),
+        kind,
+        state,
+    };
+    storage::write_tool(&definition)?;
+    Ok(definition)
+}
+
+fn persist_assembly(bench: &Bench, outcome: &AssemblyOutcome) -> Result<()> {
+    for (tool_name, record) in &outcome.tool_records {
+        storage::write_assembled_tool(tool_name, record)?;
+    }
+    storage::write_assembled_bench(&bench.name, &outcome.assembled_bench)?;
+    Ok(())
+}
+
+fn find_bay_for_tool<'a>(bench: &'a Bench, tool: &str) -> Option<BaySpec> {
+    for bay in &bench.bays {
+        if bay.tool_names.iter().any(|name| name == tool) {
+            return Some(bay.clone());
+        }
+    }
+    None
+}
+
+fn read_tool_records(bench: &Bench) -> Result<BTreeMap<String, AssembledTool>> {
+    let mut records = BTreeMap::new();
+    for bay in &bench.bays {
+        for tool_name in &bay.tool_names {
+            if records.contains_key(tool_name) {
+                continue;
+            }
+            if let Some(record) = storage::read_assembled_tool(tool_name)? {
+                records.insert(tool_name.clone(), record);
+            }
+        }
+    }
+    Ok(records)
+}
+
+fn invert_assembled(assembled: &AssembledBench) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for (bay, windows) in &assembled.bay_windows {
+        for window in windows {
+            map.insert(window.clone(), bay.clone());
+        }
+    }
+    map
 }

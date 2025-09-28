@@ -59,7 +59,7 @@ Use `bench create <bench-name>` to scaffold a new bench specification and `bench
 
 ## Tool
 
-Each tool is defined once under `$BENCH_STATE/tools/<tool>.yml`. These files map directly to the Rust `Tool` struct and can be reused across benches.
+Each tool is defined once under `$BENCH_STATE/tools/<tool>.yml`. These files map directly to the Rust `Tool` struct and can be reused across benches. Bay assignments always live in the bench specification—tool definitions focus solely on how to launch the application.
 
 Example tool definition (`$BENCH_STATE/tools/home-browser.yml`):
 
@@ -91,7 +91,7 @@ Assembling a bench means ensuring each tool defined in the bench has an open win
 - Launch tools that aren’t currently assembled.
 - Reuse existing tool containers when possible.
 - Record a map of `tool_name -> window_id` under `$BENCH_STATE/assembled-tools/` for quick reuse.
-- Update `$BENCH_STATE/assembled-benches/<bench>.json` with the list of window IDs currently tied to each bay. This includes unmanaged windows that you grouped with the bench manually.
+- Update `$BENCH_STATE/assembled-benches/<bench>.json` with a plain mapping of bay names to the window IDs currently tied to each bay. This includes unmanaged windows that you grouped with the bench manually, and no extra metadata is stored.
 
 Run `bench assemble <bench-name>` to perform these steps. Assembling does *not* move windows; it only guarantees they exist and that their IDs are tracked.
 
@@ -129,4 +129,3 @@ When running from the repository, you can start the launcher with:
 ```bash
 cargo run --features launcher-ui -- launcher
 ```
-

@@ -20,7 +20,6 @@ enum LauncherAction {
     AddWindow,
 }
 
-
 impl LauncherAction {
     fn label(&self, bench: &str) -> String {
         match self {

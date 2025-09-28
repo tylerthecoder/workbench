@@ -1,4 +1,5 @@
 mod apps;
+mod assembly;
 mod bench_ops;
 #[cfg(feature = "launcher-ui")]
 mod launcher_ui;
@@ -13,23 +14,21 @@ mod launcher_ui {
     }
 }
 mod model;
-mod runtime;
 mod storage;
 mod sway;
 
 use bench_ops::{
-    assemble_active_bench, benches_dir_or_default, create_bench, current_runtime_snapshot,
-    launch_tool_by_name, list_benches, set_active_bench, snapshot_current_as_bench,
-    stow_active_bench,
+    active_bench, assemble, assemble_tool, craft_tool, create_bench, focus, info, list_benches,
+    stow, sync_layout, sync_tool_state, BenchInfo, BenchReport,
 };
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::model::BenchRuntime;
+use crate::apps::ToolKind;
+use crate::assembly::ToolStatus;
 
 #[derive(Parser, Debug)]
 #[command(name = "bench")]
-#[command(about = "Bench: Sway bench/bay/tool manager (Rust)", long_about = None)]
+#[command(about = "Bench: Sway bench/bay/tool manager", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -37,165 +36,172 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Create a bench from the current window layout (adds defaults only)
-    Create {
-        name: String,
-        #[arg(long)]
-        benches_dir: Option<PathBuf>,
-    },
-    /// Assemble the currently active bench (will activate the chosen bench)
-    Assemble {
-        bench: String,
-        #[arg(long)]
-        benches_dir: Option<PathBuf>,
-    },
-    /// Stow the currently active bench
-    Stow {
-        bench: String,
-        #[arg(long)]
-        benches_dir: Option<PathBuf>,
-    },
-    /// Print the current runtime snapshot
-    Current,
-    /// Snapshot the current window layout into a new bench file
-    SnapshotCurrent {
-        name: String,
-        #[arg(long)]
-        benches_dir: Option<PathBuf>,
-    },
-    /// List bench YAMLs under the benches directory
-    ListBenches {
-        #[arg(long)]
-        benches_dir: Option<PathBuf>,
-    },
-    /// Launch a tool by name
-    Launch {
+    /// Create an empty bench specification
+    Create { name: String },
+    /// List known benches
+    ListBenches,
+    /// Assemble a bench, ensuring windows exist and tracking them
+    Assemble { bench: String },
+    /// Stow a bench's windows into the scratchpad
+    Stow { bench: String },
+    /// Focus a bench, restoring its layout
+    Focus { bench: String },
+    /// Ensure a single tool is running
+    #[command(name = "assemble-tool")]
+    AssembleTool {
         tool: String,
         #[arg(long)]
-        bay: Option<u32>,
+        bay: Option<String>,
     },
-    /// List current Sway workspaces
-    ListWorkspaces,
+    /// Sync the active bench layout back to disk
+    #[command(name = "sync-layout")]
+    SyncLayout,
+    /// Sync tool state back to disk (tabs, etc.)
+    #[command(name = "sync-tool-state")]
+    SyncToolState,
+    /// Scaffold a new tool definition
+    #[command(name = "craft-tool")]
+    CraftTool { kind: ToolKindArg, name: String },
+    /// Display bench details and runtime status
+    Info { bench: String },
     /// Launch the optional GTK launcher UI
     Launcher,
+    /// Print the currently active bench name, if any
+    Active,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum ToolKindArg {
+    Browser,
+    Terminal,
+    Zed,
+}
+
+impl From<ToolKindArg> for ToolKind {
+    fn from(value: ToolKindArg) -> Self {
+        match value {
+            ToolKindArg::Browser => ToolKind::Browser,
+            ToolKindArg::Terminal => ToolKind::Terminal,
+            ToolKindArg::Zed => ToolKind::Zed,
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Create { name, benches_dir } => {
-            let benches_dir = benches_dir_or_default(benches_dir);
-            let bench = create_bench(&name, &benches_dir)?;
-            println!("created bench '{}'", bench.name);
-        }
-        Commands::Assemble { bench, benches_dir } => {
-            let benches_dir = benches_dir_or_default(benches_dir);
-            set_active_bench(&bench, &benches_dir)?;
-            let report = assemble_active_bench(&benches_dir)?;
-            print_report(report);
-        }
-        Commands::Stow { bench, benches_dir } => {
-            let benches_dir = benches_dir_or_default(benches_dir);
-            set_active_bench(&bench, &benches_dir)?;
-            let report = stow_active_bench(&benches_dir)?;
-            print_report(report);
-        }
-        Commands::Current => {
-            let runtime = current_runtime_snapshot()?;
-            print_runtime(runtime);
-        }
-        Commands::SnapshotCurrent { name, benches_dir } => {
-            let benches_dir = benches_dir_or_default(benches_dir);
-            let bench = snapshot_current_as_bench(&name, &benches_dir)?;
+        Commands::Create { name } => {
+            let bench = create_bench(&name)?;
+            let path = crate::storage::bench_path(&bench.name);
             println!(
-                "saved new bench '{}' with {} defaults",
+                "created bench '{}' at {}; edit the YAML to add bays",
                 bench.name,
-                bench.tool_defaults.len()
+                path.display()
             );
         }
-        Commands::ListBenches { benches_dir } => {
-            let benches_dir = benches_dir_or_default(benches_dir);
-            for bench in list_benches(&benches_dir)? {
+        Commands::ListBenches => {
+            for bench in list_benches()? {
                 println!("{}", bench);
             }
         }
-        Commands::Launch { tool, bay } => {
-            let (status, runtime_state) = launch_tool_by_name(&tool, bay)?;
+        Commands::Assemble { bench } => {
+            let report = assemble(&bench)?;
+            print_bench_report(&report);
         }
-        Commands::ListWorkspaces => {
-            let names = sway::list_workspaces()?;
-            for n in names {
-                println!("{}", n);
-            }
+        Commands::Stow { bench } => {
+            let report = stow(&bench)?;
+            print_bench_report(&report);
+        }
+        Commands::Focus { bench } => {
+            let report = focus(&bench)?;
+            print_bench_report(&report);
+        }
+        Commands::AssembleTool { tool, bay } => {
+            let status = assemble_tool(&tool, bay)?;
+            print_tool_status(&status);
+        }
+        Commands::SyncLayout => {
+            let bench = sync_layout()?;
+            println!("synced layout for bench '{}'", bench.name);
+        }
+        Commands::SyncToolState => {
+            sync_tool_state()?;
+            println!("synced tool state");
+        }
+        Commands::CraftTool { kind, name } => {
+            let definition = craft_tool(ToolKind::from(kind), &name)?;
+            println!(
+                "wrote tool definition '{}' ({:?})",
+                definition.name, definition.kind
+            );
+        }
+        Commands::Info { bench } => {
+            let details = info(&bench)?;
+            print_bench_info(&details);
         }
         Commands::Launcher => {
             launcher_ui::run()?;
         }
+        Commands::Active => match active_bench()? {
+            Some(name) => println!("{}", name),
+            None => println!("<no active bench>"),
+        },
     }
     Ok(())
 }
 
-fn print_runtime(runtime: BenchRuntime) {
-    println!("Bench runtime snapshot for {}", runtime.name);
-    if runtime.captured_bays.is_empty() {
-        println!("Captured bays: <none>");
-        return;
-    }
-    println!("Captured bays:");
-    for bay in runtime.captured_bays {
-        let title = bay.name.clone().unwrap_or_default();
-        println!("  Bay {} {}", bay.bay, title);
-        for id in bay.window_ids {
-            println!("    window id {}", id);
-        }
-    }
-}
-
-fn print_report(report: bench_ops::BenchRuntimeReport) {
+fn print_bench_report(report: &BenchReport) {
     println!("Bench: {}", report.bench.name);
-    if report.runtime.captured_bays.is_empty() {
-        println!("Captured bays: <none>");
+    if report.assembled.bay_windows.is_empty() {
+        println!("Tracked bays: <none>");
     } else {
-        println!("Captured bays:");
-        for bay in &report.runtime.captured_bays {
-            let title = bay.name.clone().unwrap_or_default();
-            println!("  Bay {} {}", bay.bay, title);
-            for id in &bay.window_ids {
-                println!("    window id {}", id);
+        println!("Tracked bays:");
+        for (bay, windows) in &report.assembled.bay_windows {
+            println!("  {}:", bay);
+            for window in windows {
+                println!("    window {}", window);
             }
         }
     }
 
-    if report.tool_statuses.is_empty() {
+    if report.statuses.is_empty() {
+        println!("Tools: <none>");
+    } else {
+        println!("Tools:");
+        for status in &report.statuses {
+            print_tool_status(status);
+        }
+    }
+}
+
+fn print_bench_info(info: &BenchInfo) {
+    println!("Bench: {}", info.bench.name);
+    println!("Active: {}", if info.active { "yes" } else { "no" });
+    println!("Assembled: {}", if info.assembled { "yes" } else { "no" });
+    if info.statuses.is_empty() {
         println!("Tools: <none>");
         return;
     }
-
     println!("Tools:");
-    for status in &report.tool_statuses {
-        let drift = if status.is_drifted() { "*" } else { " " };
-        let actual = status
-            .actual_bay
-            .map(|n| format!("{}", n))
-            .unwrap_or_else(|| "(missing)".to_string());
-        let mut details = Vec::new();
-        if let Some(cid) = &status.container_id {
-            details.push(format!("cid {}", cid));
-        }
-        if let Some(port) = status.debug_port {
-            details.push(format!("debug {}", port));
-        }
-        if let Some(time) = status.last_opened {
-            details.push(format!("last_opened {}", time));
-        }
-        let details = if details.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", details.join(", "))
-        };
-        println!(
-            "{} {} default={} actual={}{}",
-            drift, status.name, status.default_bay, actual, details
-        );
+    for status in &info.statuses {
+        print_tool_status(status);
     }
+}
+
+fn print_tool_status(status: &ToolStatus) {
+    let window = status
+        .window_id
+        .as_ref()
+        .map(|id| id.as_str())
+        .unwrap_or("<missing>");
+    let workspace = status
+        .workspace
+        .as_ref()
+        .map(|ws| ws.as_str())
+        .unwrap_or("<unplaced>");
+    let flag = if status.launched { "*" } else { " " };
+    println!(
+        "{} {} @ {} -> window {} (workspace {})",
+        flag, status.name, status.bay, window, workspace
+    );
 }

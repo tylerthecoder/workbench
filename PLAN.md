@@ -4,11 +4,13 @@
 - Represent bays with their full string names (for example `1: Home`) throughout models and logic.
 - Update `ToolDefault`, `CapturedBay`, `BenchRuntime`, and related types to store bay names as strings instead of numeric IDs.
 - Replace helpers that parse numeric workspace IDs; provide string-based sway helpers for ensuring/renaming/moving bays.
+- Keep tool definitions bay-agnostic; benches own all bay assignments.
 
 ## 2. Storage Layout & Persistence Helpers
 - Extend `storage.rs` so it exposes helpers for every persisted artifact: bench specs, tool specs, assembled benches, assembled tools, and the active bench marker.
 - Ensure directory creation (`ensure_dirs`, etc.) covers the new paths under `$BENCH_STATE/`.
 - Keep bench/tool definitions as YAML; write assembled bench/tool data as JSON in the new locations via `storage.rs`.
+- Model assembled benches as plain bay-name → window-id-list mappings with no extra metadata.
 
 ## 3. Tool Runtime Tracking
 - Replace `ToolRuntimeState` with a minimal structure that stores only the tracked `window_id`.
@@ -24,6 +26,7 @@
 - Align the CLI with the README: `assemble`, `stow`, `focus`, `assemble-tool`, `sync-layout`, `sync-tool-state`, `craft-tool`, `list-benches`, and `info` (with `bench info <bench>` showing whether the bench is assembled or focused).
 - Refresh command descriptions/help text to use bay terminology.
 - Update CLI output to reflect the simplified runtime state (e.g., showing tracked `window_id` per tool).
+- Remove legacy commands (`current`, `snapshot-current`, `list-workspaces`, `launch`, etc.) that are absent from the README.
 
 ## 6. Model & Helper Adjustments
 - Update sway helpers to work with bay names: ensure visibility, rename, move containers using strings.
@@ -42,7 +45,7 @@
 ## 9. Core Data Structures
 - `model::Bench`: YAML-backed spec containing `name` and an ordered list of `BaySpec` entries (see below).
 - `model::BaySpec` (new): replaces `ToolDefault`, stores `{ name: String, tool_names: Vec<String> }` to align with README.
-- `model::AssembledBench` (new): JSON-serializable structure mapping bay names to window ID lists plus optional metadata.
+- `model::AssembledBench` (new): JSON-serializable structure mapping bay names to window ID lists (no additional metadata fields).
 - `model::AssembledTool` (new): JSON holding `{ window_id: String }` for each assembled tool.
 - Active bench tracking becomes a simple string persisted via `storage.rs`; no standalone runtime module.
 

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::apps::{ToolKind, ToolState};
@@ -6,36 +8,25 @@ use crate::apps::{ToolKind, ToolState};
 pub struct Bench {
     pub name: String,
     #[serde(default)]
-    pub tool_defaults: Vec<ToolDefault>,
+    pub bays: Vec<BaySpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ToolDefault {
-    pub bay: u32,
-    pub name: Option<String>,
+pub struct BaySpec {
+    pub name: String,
     #[serde(default)]
     pub tool_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BenchRuntime {
-    pub name: String,
+pub struct AssembledBench {
     #[serde(default)]
-    pub captured_bays: Vec<CapturedBay>,
+    pub bay_windows: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CapturedBay {
-    pub bay: u32,
-    pub name: Option<String>,
-    #[serde(default)]
-    pub window_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkspaceSnapshot {
-    #[serde(default)]
-    pub name: Option<String>,
+pub struct AssembledTool {
+    pub window_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,4 +3,4 @@ pub mod terminal;
 mod tool;
 pub mod zed;
 
-pub use tool::{BenchTool, Tool, ToolKind, ToolState};
+pub use tool::{Tool, ToolKind, ToolState};
