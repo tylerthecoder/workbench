@@ -13,29 +13,10 @@ use crate::sway::WindowInfo;
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
-pub struct ToolRuntimeStatus {
-    pub name: String,
-    pub default_bay: u32,
-    pub actual_bay: Option<u32>,
-    pub container_id: Option<String>,
-    pub debug_port: Option<u16>,
-    pub last_opened: Option<OffsetDateTime>,
-}
-
-impl ToolRuntimeStatus {
-    pub fn is_drifted(&self) -> bool {
-        match self.actual_bay {
-            Some(actual) => actual != self.default_bay,
-            None => true,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct BenchRuntimeReport {
     pub bench: Bench,
     pub runtime: BenchRuntime,
-    pub tool_statuses: Vec<ToolRuntimeStatus>,
+    pub tool_statuses: Vec<ToolRuntimeState>,
 }
 
 pub fn create_bench(name: &str, benches_dir: &Path) -> Result<Bench> {

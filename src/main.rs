@@ -19,7 +19,8 @@ mod sway;
 
 use bench_ops::{
     assemble_active_bench, benches_dir_or_default, create_bench, current_runtime_snapshot,
-    list_benches, set_active_bench, snapshot_current_as_bench, stow_active_bench,
+    launch_tool_by_name, list_benches, set_active_bench, snapshot_current_as_bench,
+    stow_active_bench,
 };
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -67,6 +68,12 @@ enum Commands {
         #[arg(long)]
         benches_dir: Option<PathBuf>,
     },
+    /// Launch a tool by name
+    Launch {
+        tool: String,
+        #[arg(long)]
+        bay: Option<u32>,
+    },
     /// List current Sway workspaces
     ListWorkspaces,
     /// Launch the optional GTK launcher UI
@@ -111,6 +118,9 @@ fn main() -> anyhow::Result<()> {
             for bench in list_benches(&benches_dir)? {
                 println!("{}", bench);
             }
+        }
+        Commands::Launch { tool, bay } => {
+            let (status, runtime_state) = launch_tool_by_name(&tool, bay)?;
         }
         Commands::ListWorkspaces => {
             let names = sway::list_workspaces()?;

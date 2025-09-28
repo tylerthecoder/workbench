@@ -13,16 +13,13 @@ pub struct ToolRuntimeState {
     pub container_id: String,
     #[serde(with = "time::serde::rfc3339")]
     pub last_opened: OffsetDateTime,
-    #[serde(default)]
-    pub debug_port: Option<u16>,
 }
 
 impl ToolRuntimeState {
-    pub fn new(container_id: String, debug_port: Option<u16>) -> Self {
+    pub fn new(container_id: String) -> Self {
         Self {
             container_id,
             last_opened: OffsetDateTime::now_utc(),
-            debug_port,
         }
     }
 

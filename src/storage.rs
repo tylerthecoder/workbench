@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub fn data_dir() -> PathBuf {
     std::env::var("XDG_DATA_HOME")
@@ -58,10 +58,6 @@ pub fn bench_runtime_path(name: &str) -> PathBuf {
 
 pub fn active_bench_path() -> PathBuf {
     runtime_dir().join(".active_bench")
-}
-
-pub fn path_exists(p: &Path) -> bool {
-    p.exists()
 }
 
 fn sanitize_name(value: &str) -> String {
