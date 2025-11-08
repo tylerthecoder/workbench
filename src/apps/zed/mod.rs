@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,11 @@ pub fn launch(config: &Config) -> Result<()> {
     if let Some(path) = config.path.as_ref() {
         cmd.arg(expand_tilde(path));
     }
+
+    // Redirect stdout and stderr to null to avoid cluttering the terminal
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
     let _ = cmd.spawn()?;
     Ok(())
 }

@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,16 @@ pub fn launch(config: &Config, debug_port: u16) -> Result<()> {
     let mut cmd = Command::new("chromium");
     cmd.arg("--new-window");
     cmd.arg(format!("--remote-debugging-port={}", debug_port));
+    // tmp
+    cmd.arg(format!("--user-data-dir=/tmp/chromium-{}", debug_port));
     for url in &config.urls {
         cmd.arg(url);
     }
+
+    // Redirect stdout and stderr to null to avoid cluttering the terminal
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
     let _ = cmd.spawn()?;
     Ok(())
 }

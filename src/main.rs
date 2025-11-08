@@ -44,7 +44,6 @@ enum Commands {
         command: BenchCommands,
     },
     /// Shorthand for 'bench' subcommand
-    #[command(alias = "b")]
     B {
         #[command(subcommand)]
         command: BenchCommands,

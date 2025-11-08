@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,10 @@ pub fn launch(config: &Config) -> Result<()> {
             cmd.arg(part);
         }
     }
+
+    // Redirect stdout and stderr to null to avoid cluttering the terminal
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
 
     let _ = cmd.spawn()?;
     Ok(())

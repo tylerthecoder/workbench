@@ -158,24 +158,29 @@ pub fn tool_info(tool_name: &str) -> Result<String> {
         output.push_str("Last Assembled: Never\n");
     }
 
-    if let Some(ref assembled) = tool.assembled {
+    let is_running = if let Some(ref assembled) = tool.assembled {
         output.push_str(&format!("\nAssembled Window ID: {}\n", assembled.window_id));
 
         // Check if window still exists
         if sway::container_exists(&assembled.window_id)? {
             output.push_str("Window Status: ✓ Running\n");
+            true
         } else {
             output.push_str("Window Status: ✗ Not found (stale)\n");
+            false
         }
     } else {
         output.push_str("\nAssembled Window: None\n");
-    }
+        false
+    };
 
-    // Fetch live state
-    output.push_str("\n--- Live State ---\n");
-    match fetch_live_state_display(&tool) {
-        Ok(state) => output.push_str(&state),
-        Err(e) => output.push_str(&format!("{}\n", e)),
+    // Only fetch live state if the tool is currently running
+    if is_running {
+        output.push_str("\n--- Live State ---\n");
+        match fetch_live_state_display(&tool) {
+            Ok(state) => output.push_str(&state),
+            Err(e) => output.push_str(&format!("{}\n", e)),
+        }
     }
 
     // Show saved state
