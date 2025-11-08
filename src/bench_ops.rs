@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Context, Result};
 
@@ -43,6 +43,9 @@ pub fn create_bench(name: &str) -> Result<Bench> {
     let bench = Bench {
         name: name.to_string(),
         bays: Vec::new(),
+        created_at: time::OffsetDateTime::now_utc(),
+        last_focused_at: None,
+        assembled: crate::model::AssembledBench::default(),
     };
     storage::write_bench(&bench)?;
     Ok(bench)
@@ -178,8 +181,13 @@ pub fn focus(bench_name: &str, stow_others: bool) -> Result<BenchReport> {
     // 7. Enrich statuses with current workspace info
     enrich_status_workspaces(&mut statuses)?;
 
-    // 8. Mark as focused
+    // 8. Mark as focused and update timestamp
     storage::write_focused_bench(bench_name)?;
+
+    // Update last_focused_at timestamp
+    let mut bench = storage::read_bench(bench_name)?;
+    bench.last_focused_at = Some(time::OffsetDateTime::now_utc());
+    storage::write_bench(&bench)?;
 
     Ok(BenchReport {
         bench,
@@ -273,34 +281,7 @@ pub fn sync_layout() -> Result<AssembledBench> {
 }
 
 pub fn sync_tool_state() -> Result<()> {
-    let focused = storage::read_focused_bench()?;
-    let name = focused.ok_or_else(|| anyhow!("no focused bench is set"))?;
-    let bench = storage::read_bench(&name)?;
-    let mut processed = BTreeSet::new();
-    for bay in &bench.bays {
-        for tool_name in &bay.tool_names {
-            if !processed.insert(tool_name.clone()) {
-                continue;
-            }
-            let mut definition = storage::read_tool(tool_name)?;
-            match definition.kind {
-                crate::apps::ToolKind::Browser => {
-                    let port = tool_ops::browser_debug_port(tool_name);
-                    if let Ok(urls) = crate::apps::browser::list_tabs(port) {
-                        definition.state = Some(crate::apps::ToolState::Browser(
-                            crate::apps::browser::Config { urls },
-                        ));
-                        storage::write_tool(&definition)?;
-                    }
-                }
-                _ => {
-                    // No dynamic state to sync for terminal/zed at the moment.
-                }
-            }
-        }
-    }
-
-    Ok(())
+    tool_ops::sync_all_tools()
 }
 
 pub fn focused_bench() -> Result<Option<String>> {
@@ -323,7 +304,10 @@ pub fn craft_tool(kind: ToolKind, name: &str) -> Result<ToolDefinition> {
     let definition = ToolDefinition {
         name: name.to_string(),
         kind,
+        created_at: time::OffsetDateTime::now_utc(),
+        last_assembled_at: None,
         state,
+        assembled: None,
     };
     storage::write_tool(&definition)?;
     Ok(definition)

@@ -24,12 +24,13 @@ use bench_ops::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
+use tool_ops::tool_info;
 
 use crate::apps::ToolKind;
 
 #[derive(Parser, Debug)]
-#[command(name = "bench")]
-#[command(about = "Bench: Sway bench/bay/tool manager", long_about = None)]
+#[command(name = "yard")]
+#[command(about = "Yard: Sway workspace manager with benches and tools", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -37,43 +38,65 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Create an empty bench specification
+    /// Manage benches (workspaces)
+    Bench {
+        #[command(subcommand)]
+        command: BenchCommands,
+    },
+    /// Shorthand for 'bench' subcommand
+    #[command(alias = "b")]
+    B {
+        #[command(subcommand)]
+        command: BenchCommands,
+    },
+    /// Manage tools (applications)
+    Tool {
+        #[command(subcommand)]
+        command: ToolCommands,
+    },
+    /// Launch the optional GTK launcher UI
+    Launcher,
+}
+
+#[derive(Subcommand, Debug)]
+enum BenchCommands {
+    /// List all benches
+    List,
+    /// Create a new bench
     Create { name: String },
-    /// List known benches
-    ListBenches,
-    /// List known tools
-    ListTools,
     /// Focus a bench, restoring its layout
     Focus {
-        bench: String,
+        name: String,
         #[arg(long)]
         no_stow: bool,
     },
     /// Preview what focusing a bench will do
     #[command(name = "focus-plan")]
-    FocusPlan { bench: String },
-    /// Ensure a single tool is running
-    #[command(name = "assemble-tool")]
-    AssembleTool {
-        tool: String,
+    FocusPlan { name: String },
+    /// Show bench details and runtime status
+    Info { name: String },
+    /// Sync the focused bench layout to disk
+    Sync,
+    /// Show the currently focused bench
+    Focused,
+}
+
+#[derive(Subcommand, Debug)]
+enum ToolCommands {
+    /// List all tools
+    List,
+    /// Create a new tool
+    Craft { kind: ToolKindArg, name: String },
+    /// Show tool details and fetch live state
+    Info { name: String },
+    /// Ensure a tool is running
+    Assemble {
+        name: String,
         #[arg(long)]
         bay: Option<String>,
     },
-    /// Sync the focused bench layout back to disk
-    #[command(name = "sync-layout")]
-    SyncLayout,
-    /// Sync tool state back to disk (tabs, etc.)
-    #[command(name = "sync-tool-state")]
-    SyncToolState,
-    /// Scaffold a new tool definition
-    #[command(name = "craft-tool")]
-    CraftTool { kind: ToolKindArg, name: String },
-    /// Display bench details and runtime status
-    Info { bench: String },
-    /// Launch the optional GTK launcher UI
-    Launcher,
-    /// Print the currently focused bench name, if any
-    Focused,
+    /// Sync all tool states to disk
+    Sync,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -96,147 +119,156 @@ impl From<ToolKindArg> for ToolKind {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Create { name } => {
-            let bench = create_bench(&name)?;
-            let path = crate::storage::bench_path(&bench.name);
-            println!(
-                "{} {}",
-                "✨".bold().bright_magenta(),
-                format!("Bench '{}' created!", bench.name).bold()
-            );
-            println!(
-                "  {} {}",
-                "📄".bright_cyan(),
-                format!("Saved to {}", path.display()).italic()
-            );
-            println!(
-                "  {} {}",
-                "✏️".bright_yellow(),
-                "Edit the YAML to add bays whenever you're ready!".dimmed()
-            );
-        }
-        Commands::ListBenches => {
-            let benches = list_benches()?;
-            println!(
-                "{} {}",
-                "📚".bold().bright_magenta(),
-                "Available benches".bold()
-            );
-            if benches.is_empty() {
+        Commands::Bench { command } | Commands::B { command } => match command {
+            BenchCommands::List => {
+                let benches = list_benches()?;
                 println!(
-                    "  {}",
-                    "No benches found. Try `bench create <name>` to get started!".dimmed()
+                    "{} {}",
+                    "📚".bold().bright_magenta(),
+                    "Available benches".bold()
                 );
-            } else {
-                for (idx, bench) in benches.iter().enumerate() {
+                if benches.is_empty() {
                     println!(
-                        "  {} {}",
-                        "•".bright_cyan(),
-                        format!("{:>2}. {}", idx + 1, bench).bold()
+                        "  {}",
+                        "No benches found. Try `yard bench create <name>` to get started!".dimmed()
                     );
+                } else {
+                    for (idx, bench) in benches.iter().enumerate() {
+                        println!(
+                            "  {} {}",
+                            "•".bright_cyan(),
+                            format!("{:>2}. {}", idx + 1, bench).bold()
+                        );
+                    }
                 }
             }
-        }
-        Commands::ListTools => {
-            let tools = list_tools()?;
-            println!(
-                "{} {}",
-                "🧰".bold().bright_magenta(),
-                "Available tools".bold()
-            );
-            if tools.is_empty() {
+            BenchCommands::Create { name } => {
+                let bench = create_bench(&name)?;
+                let path = crate::storage::bench_path(&bench.name);
                 println!(
-                    "  {}",
-                    "No tools found. Try `bench craft-tool <kind> <name>` to scaffold one."
-                        .dimmed()
+                    "{} {}",
+                    "✨".bold().bright_magenta(),
+                    format!("Bench '{}' created!", bench.name).bold()
                 );
-            } else {
-                for (idx, tool) in tools.iter().enumerate() {
+                println!(
+                    "  {} {}",
+                    "📄".bright_cyan(),
+                    format!("Saved to {}", path.display()).italic()
+                );
+                println!(
+                    "  {} {}",
+                    "✏️".bright_yellow(),
+                    "Edit the JSON to add bays whenever you're ready!".dimmed()
+                );
+            }
+            BenchCommands::Focus { name, no_stow } => {
+                println!(
+                    "{} {}",
+                    "🎯".bold().bright_green(),
+                    format!("Bringing bench '{}' into focus…", name).bold()
+                );
+                let report = focus(&name, !no_stow)?;
+                println!(
+                    "{} {}",
+                    "👀".bold().bright_cyan(),
+                    format!("Bench '{}' is front-and-center!", name).bold()
+                );
+                print_bench_report(&report);
+            }
+            BenchCommands::FocusPlan { name } => {
+                let plan = focus_plan(&name)?;
+                print!("{}", plan);
+            }
+            BenchCommands::Info { name } => {
+                let details = info(&name)?;
+                print_bench_info(&details);
+            }
+            BenchCommands::Sync => {
+                let _assembled = sync_layout()?;
+                let bench_name =
+                    focused_bench()?.ok_or_else(|| anyhow::anyhow!("no focused bench"))?;
+                println!(
+                    "{} {}",
+                    "🧭".bold().bright_cyan(),
+                    format!("Captured current layout for '{}'.", bench_name).bold()
+                );
+            }
+            BenchCommands::Focused => match focused_bench()? {
+                Some(name) => println!(
+                    "{} {}",
+                    "🎯".bold().bright_green(),
+                    format!("Focused bench: {}", name).bold()
+                ),
+                None => println!(
+                    "{} {}",
+                    "💤".bold().bright_black(),
+                    "No bench is currently focused.".dimmed()
+                ),
+            },
+        },
+        Commands::Tool { command } => match command {
+            ToolCommands::List => {
+                let tools = list_tools()?;
+                println!(
+                    "{} {}",
+                    "🧰".bold().bright_magenta(),
+                    "Available tools".bold()
+                );
+                if tools.is_empty() {
                     println!(
-                        "  {} {}",
-                        "•".bright_cyan(),
-                        format!("{:>2}. {}", idx + 1, tool).bold()
+                        "  {}",
+                        "No tools found. Try `yard tool craft <kind> <name>` to scaffold one."
+                            .dimmed()
                     );
+                } else {
+                    for (idx, tool) in tools.iter().enumerate() {
+                        println!(
+                            "  {} {}",
+                            "•".bright_cyan(),
+                            format!("{:>2}. {}", idx + 1, tool).bold()
+                        );
+                    }
                 }
             }
-        }
-        Commands::Focus { bench, no_stow } => {
-            println!(
-                "{} {}",
-                "🎯".bold().bright_green(),
-                format!("Bringing bench '{}' into focus…", bench).bold()
-            );
-            let report = focus(&bench, !no_stow)?;
-            println!(
-                "{} {}",
-                "👀".bold().bright_cyan(),
-                format!("Bench '{}' is front-and-center!", bench).bold()
-            );
-            print_bench_report(&report);
-        }
-        Commands::FocusPlan { bench } => {
-            let plan = focus_plan(&bench)?;
-            print!("{}", plan);
-        }
-        Commands::AssembleTool { tool, bay } => {
-            println!(
-                "{} {}",
-                "🔁".bold().bright_yellow(),
-                format!("Ensuring tool '{}' is running…", tool).bold()
-            );
-            let bay_name = bay.as_deref().unwrap_or("default");
-            let status = assemble_tool(&tool, bay_name)?;
-            println!("{} {}", "✅".bold().bright_green(), "Tool status:".bold());
-            print_tool_status(&status);
-        }
-        Commands::SyncLayout => {
-            let _assembled = sync_layout()?;
-            let bench_name = focused_bench()?.ok_or_else(|| anyhow::anyhow!("no focused bench"))?;
-            println!(
-                "{} {}",
-                "🧭".bold().bright_cyan(),
-                format!("Captured current layout for '{}'.", bench_name).bold()
-            );
-        }
-        Commands::SyncToolState => {
-            sync_tool_state()?;
-            println!(
-                "{} {}",
-                "🔄".bold().bright_green(),
-                "Captured tool state from running apps.".bold()
-            );
-        }
-        Commands::CraftTool { kind, name } => {
-            let definition = craft_tool(ToolKind::from(kind), &name)?;
-            println!(
-                "{} {}",
-                "🪄".bold().bright_magenta(),
-                format!(
-                    "Crafted tool '{}' ({:?}).",
-                    definition.name, definition.kind
-                )
-                .bold()
-            );
-        }
-        Commands::Info { bench } => {
-            let details = info(&bench)?;
-            print_bench_info(&details);
-        }
+            ToolCommands::Craft { kind, name } => {
+                let definition = craft_tool(ToolKind::from(kind), &name)?;
+                println!(
+                    "{} {}",
+                    "🪄".bold().bright_magenta(),
+                    format!(
+                        "Crafted tool '{}' ({:?}).",
+                        definition.name, definition.kind
+                    )
+                    .bold()
+                );
+            }
+            ToolCommands::Info { name } => {
+                let info = tool_info(&name)?;
+                print!("{}", info);
+            }
+            ToolCommands::Assemble { name, bay } => {
+                println!(
+                    "{} {}",
+                    "🔁".bold().bright_yellow(),
+                    format!("Ensuring tool '{}' is running…", name).bold()
+                );
+                let bay_name = bay.as_deref().unwrap_or("default");
+                let status = assemble_tool(&name, bay_name)?;
+                println!("{} {}", "✅".bold().bright_green(), "Tool status:".bold());
+                print_tool_status(&status);
+            }
+            ToolCommands::Sync => {
+                sync_tool_state()?;
+                println!(
+                    "{} {}",
+                    "🔄".bold().bright_green(),
+                    "Captured tool state from running apps.".bold()
+                );
+            }
+        },
         Commands::Launcher => {
             launcher_ui::run()?;
         }
-        Commands::Focused => match focused_bench()? {
-            Some(name) => println!(
-                "{} {}",
-                "🎯".bold().bright_green(),
-                format!("Focused bench: {}", name).bold()
-            ),
-            None => println!(
-                "{} {}",
-                "💤".bold().bright_black(),
-                "No bench is currently focused.".dimmed()
-            ),
-        },
     }
     Ok(())
 }
