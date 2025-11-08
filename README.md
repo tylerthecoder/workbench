@@ -8,7 +8,7 @@ Your work involves multiple projects—a game you're coding, a paper you're rese
 
 **Bench treats GUI workspaces like tmux treats terminal sessions.**
 
-Define a "bench" for each project or context. Add tools to it by launching them from the menu. Move them around with normal sway commands. Switch to a different bench and the window state is saved into the scratchpad. Reboot your computer without loosing the state of the windows!
+Define a "bench" for each project or context. Add tools to it. Move them around with normal sway commands. Switch to a different bench and the previous bench's windows are automatically stowed to the scratchpad while the new bench's windows are restored. One bench is always focused—switching between them is instant.
 
 **Tool state persists to disk.** When you focus a bench, missing tools are relaunched with their saved state—your browser reopens with the exact same tabs, your terminals land in the right directories, your editors load the right projects. Close everything, restart your machine, focus the bench again—it all comes back. You're not just saving window positions; you're saving the entire application state.
 
@@ -40,7 +40,7 @@ All state lives under `$BENCH_STATE`:
 - `tools/` - Tool definitions (YAML)
 - `assembled-benches/` - Current window layouts (JSON)
 - `assembled-tools/` - Tracked window IDs (JSON)
-- `active-bench` - Currently active bench name (text file)
+- `focused-bench` - Currently focused bench name (text file)
 
 ---
 
@@ -187,40 +187,53 @@ bench info research
 ```
 
 Shows:
-- Whether the bench is currently active
+- Whether the bench is currently focused
 - Whether all tools are assembled (running)
 - Status of each tool: window ID, workspace location, whether it was recently launched
 
 **GUI:** Select a bench in the launcher and press `i` (planned feature).
 
+### Planning a Focus
+
+See what will happen when you focus a bench without actually doing it:
+
+```bash
+bench focus-plan research
+```
+
+Shows:
+- Which tools will be launched (because they aren't running yet)
+- Which windows will be moved where
+- Which windows from other benches will be stowed to scratchpad
+
+This is useful for understanding what changes before committing to them.
+
+**GUI:** Not yet available.
+
 ### Focusing a Bench
 
-**Focusing** is the main operation. It activates a bench and brings all its tools into view.
+**Focusing** is the main operation. It switches to a bench and brings all its tools into view.
 
 ```bash
 bench focus research
 ```
 
 What happens:
-1. **Save current state:** If another bench is active, its current layout is saved to disk
+1. **Save current state:** If another bench is focused, its current layout is saved to disk
 2. **Ensure tools exist:** All tools defined in the target bench are launched if not already running
-3. **Stow other windows:** Windows not belonging to the bench are moved to the scratchpad
-4. **Restore layout:** Windows are moved to their designated bay workspaces
-5. **Mark active:** This bench becomes the active bench
+3. **Stow other windows:** Windows not belonging to the target bench are moved to the scratchpad
+4. **Restore layout:** Target bench windows are moved to their designated bay workspaces
+5. **Mark focused:** This bench becomes the focused bench
 
-**GUI:** Select a bench and press `Enter`, or double-click.
-
-### Stowing a Bench
-
-**Stowing** hides a bench's windows without closing them.
+**Keep existing windows visible:**
 
 ```bash
-bench stow research
+bench focus research --no-stow
 ```
 
-All windows belonging to the bench are moved to the scratchpad. The processes keep running—you can focus the bench again later to restore them.
+With `--no-stow`, the bench's windows are brought up but other windows remain visible. This is useful when you want to add a bench's tools to your current workspace without hiding everything else.
 
-**GUI:** Select a bench and press `Shift+Enter`.
+**GUI:** Select a bench and press `Enter`, or double-click.
 
 ### Syncing Bench Layout
 
@@ -236,21 +249,21 @@ This saves the current window-to-bay mapping to `$BENCH_STATE/assembled-benches/
 
 **GUI:** Press `Ctrl+S` in the launcher.
 
-### Active Bench
+### Focused Bench
 
-Check which bench is currently active:
+Check which bench is currently focused:
 
 ```bash
-bench active
+bench focused
 ```
 
-**GUI:** The active bench is highlighted in the launcher.
+**GUI:** The focused bench is highlighted in the launcher.
 
 ### Where Bench Data Lives
 
 - **Definition:** `$BENCH_STATE/benches/<bench-name>.yml` - The bench structure: which tools go in which bays
 - **Assembled layout:** `$BENCH_STATE/assembled-benches/<bench-name>.json` - Current window arrangement (e.g., `{"1: Browser": ["12345", "67890"], "2: Notes": ["11111"]}`)
-- **Active bench:** `$BENCH_STATE/active-bench` - Name of the currently focused bench
+- **Focused bench:** `$BENCH_STATE/focused-bench` - Name of the currently focused bench
 
 ---
 
@@ -262,8 +275,7 @@ bench active
 - **Navigation:** Arrow keys move the selection; `Tab` toggles between search and list
 - **Actions:**
   - `Enter` - Focus the selected bench
-  - `Shift+Enter` - Stow the selected bench
-  - `Ctrl+S` - Sync the current layout
+  - `Ctrl+S` - Sync the current focused bench layout
 - **Status:** The footer shows the last action result; errors bubble up in the same bar
 
 When running from the repository:

@@ -15,7 +15,7 @@ pub struct ToolStatus {
     pub bay: String,
     pub window_id: Option<String>,
     pub workspace: Option<String>,
-    pub launched: bool,
+    pub assembled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub struct BenchReport {
 pub struct BenchInfo {
     pub bench: Bench,
     pub assembled: bool,
-    pub active: bool,
+    pub focused: bool,
     pub statuses: Vec<ToolStatus>,
 }
 
@@ -65,8 +65,8 @@ pub fn assemble_tool(tool_name: &str, bay: &str) -> Result<ToolStatus> {
     let _definition =
         storage::read_tool(tool_name).with_context(|| format!("tool '{}' not found", tool_name))?;
 
-    // Use tool_ops to find or launch the tool
-    let (window_id, launched) = tool_ops::ensure_tool_window(tool_name, bay)?;
+    // Use tool_ops to assemble the tool
+    let (window_id, assembled) = tool_ops::assemble_tool(tool_name, bay)?;
 
     // Build status response with current workspace info
     let workspace = sway::current_windows()?
@@ -79,7 +79,7 @@ pub fn assemble_tool(tool_name: &str, bay: &str) -> Result<ToolStatus> {
         bay: bay.to_string(),
         window_id: Some(window_id),
         workspace,
-        launched,
+        assembled,
     })
 }
 
@@ -87,8 +87,8 @@ pub fn info(bench_name: &str) -> Result<BenchInfo> {
     storage::ensure_dirs()?;
     let bench = storage::read_bench(bench_name)
         .with_context(|| format!("failed to load bench '{}'", bench_name))?;
-    let active = storage::read_active_bench()?;
-    let is_active = active.as_deref() == Some(&bench.name);
+    let focused = storage::read_focused_bench()?;
+    let is_focused = focused.as_deref() == Some(&bench.name);
 
     let tool_records = read_tool_records(&bench)?;
     let window_index = sway::current_windows()?
@@ -118,7 +118,7 @@ pub fn info(bench_name: &str) -> Result<BenchInfo> {
                 bay: bay.name.clone(),
                 window_id,
                 workspace,
-                launched: false,
+                assembled: false,
             });
         }
     }
@@ -126,12 +126,12 @@ pub fn info(bench_name: &str) -> Result<BenchInfo> {
     Ok(BenchInfo {
         bench,
         assembled,
-        active: is_active,
+        focused: is_focused,
         statuses,
     })
 }
 
-pub fn focus(bench_name: &str) -> Result<BenchReport> {
+pub fn focus(bench_name: &str, stow_others: bool) -> Result<BenchReport> {
     storage::ensure_dirs()?;
 
     // 1. Load the target bench
@@ -139,7 +139,7 @@ pub fn focus(bench_name: &str) -> Result<BenchReport> {
         .with_context(|| format!("failed to load bench '{}'", bench_name))?;
 
     // 2. Save current bench state before switching
-    if let Some(current) = storage::read_active_bench()? {
+    if let Some(current) = storage::read_focused_bench()? {
         if current != bench_name {
             // Sync the current bench's layout to disk before we switch
             let _ = sync_layout(); // Ignore errors if there's nothing to sync
@@ -147,17 +147,18 @@ pub fn focus(bench_name: &str) -> Result<BenchReport> {
     }
 
     // 3. Ensure all tools for this bench exist
+    println!("\nAssembling tools:");
     let mut statuses = Vec::new();
     for bay in &bench.bays {
         for tool_name in &bay.tool_names {
-            let (window_id, launched) = tool_ops::ensure_tool_window(tool_name, &bay.name)?;
+            let (window_id, assembled) = tool_ops::assemble_tool(tool_name, &bay.name)?;
 
             statuses.push(ToolStatus {
                 name: tool_name.clone(),
                 bay: bay.name.clone(),
                 window_id: Some(window_id.clone()),
                 workspace: None,
-                launched,
+                assembled,
             });
         }
     }
@@ -165,8 +166,10 @@ pub fn focus(bench_name: &str) -> Result<BenchReport> {
     // 4. Collect all bench windows
     let bench_windows = layout_ops::collect_bench_windows(&bench)?;
 
-    // 5. Stow everything else
-    layout_ops::stow_foreign_windows(&bench_windows)?;
+    // 5. Stow everything else (if requested)
+    if stow_others {
+        layout_ops::stow_foreign_windows(&bench_windows)?;
+    }
 
     // 6. Restore bench layout
     let assembled = storage::read_assembled_bench(bench_name)?.unwrap_or_default();
@@ -175,8 +178,8 @@ pub fn focus(bench_name: &str) -> Result<BenchReport> {
     // 7. Enrich statuses with current workspace info
     enrich_status_workspaces(&mut statuses)?;
 
-    // 8. Mark as active
-    storage::write_active_bench(bench_name)?;
+    // 8. Mark as focused
+    storage::write_focused_bench(bench_name)?;
 
     Ok(BenchReport {
         bench,
@@ -185,40 +188,77 @@ pub fn focus(bench_name: &str) -> Result<BenchReport> {
     })
 }
 
-pub fn stow(bench_name: &str) -> Result<BenchReport> {
+pub fn focus_plan(bench_name: &str) -> Result<String> {
     storage::ensure_dirs()?;
+
+    // Load the target bench
     let bench = storage::read_bench(bench_name)
         .with_context(|| format!("failed to load bench '{}'", bench_name))?;
 
-    // Get all windows for this bench
+    let mut output = String::new();
+    output.push_str(&format!("Plan for focusing bench '{}'\n\n", bench_name));
+
+    // Check which tools need to be assembled
+    output.push_str("Tools:\n");
+    for bay in &bench.bays {
+        for tool_name in &bay.tool_names {
+            match tool_ops::tool_window_exists(tool_name)? {
+                Some(window_id) => {
+                    output.push_str(&format!(
+                        "  ✓ {} (window {}) - already assembled\n",
+                        tool_name, window_id
+                    ));
+                }
+                None => {
+                    output.push_str(&format!("  ✗ {} - will be assembled\n", tool_name));
+                }
+            }
+        }
+    }
+
+    // Check which windows will be stowed
+    output.push_str("\nWindows to stow:\n");
     let bench_windows = layout_ops::collect_bench_windows(&bench)?;
-
-    // Move them all to scratchpad
-    for window_id in &bench_windows {
-        sway::move_container_to_scratchpad(window_id)?;
+    let all_windows = sway::current_windows()?;
+    let mut has_stowed = false;
+    for window in &all_windows {
+        if !bench_windows.contains(&window.id) {
+            if let Some(ref ws) = window.workspace {
+                if ws != "__i3_scratch" {
+                    output.push_str(&format!("  → Window {} from workspace {}\n", window.id, ws));
+                    has_stowed = true;
+                }
+            }
+        }
+    }
+    if !has_stowed {
+        output.push_str("  (none)\n");
     }
 
-    // Clear active if this was active
-    if storage::read_active_bench()? == Some(bench_name.to_string()) {
-        storage::write_active_bench("")?;
-    }
-
+    // Show where bench windows will be placed
+    output.push_str("\nBench window placement:\n");
     let assembled = storage::read_assembled_bench(bench_name)?.unwrap_or_default();
-    let statuses = build_statuses(&bench)?;
+    if assembled.bay_windows.is_empty() {
+        output.push_str("  (no saved layout - windows will be placed in their bay workspaces)\n");
+    } else {
+        for (bay, window_ids) in &assembled.bay_windows {
+            output.push_str(&format!(
+                "  Bay '{}': {} window(s)\n",
+                bay,
+                window_ids.len()
+            ));
+        }
+    }
 
-    Ok(BenchReport {
-        bench,
-        assembled,
-        statuses,
-    })
+    Ok(output)
 }
 
 pub fn sync_layout() -> Result<AssembledBench> {
     storage::ensure_dirs()?;
 
-    // Get the currently active bench
+    // Get the currently focused bench
     let bench_name =
-        storage::read_active_bench()?.ok_or_else(|| anyhow!("no active bench to sync"))?;
+        storage::read_focused_bench()?.ok_or_else(|| anyhow!("no focused bench to sync"))?;
 
     // Load the bench definition to know what tools/bays exist
     let bench = storage::read_bench(&bench_name)?;
@@ -233,8 +273,8 @@ pub fn sync_layout() -> Result<AssembledBench> {
 }
 
 pub fn sync_tool_state() -> Result<()> {
-    let active = storage::read_active_bench()?;
-    let name = active.ok_or_else(|| anyhow!("no active bench is set"))?;
+    let focused = storage::read_focused_bench()?;
+    let name = focused.ok_or_else(|| anyhow!("no focused bench is set"))?;
     let bench = storage::read_bench(&name)?;
     let mut processed = BTreeSet::new();
     for bay in &bench.bays {
@@ -263,8 +303,8 @@ pub fn sync_tool_state() -> Result<()> {
     Ok(())
 }
 
-pub fn active_bench() -> Result<Option<String>> {
-    storage::read_active_bench()
+pub fn focused_bench() -> Result<Option<String>> {
+    storage::read_focused_bench()
 }
 
 pub fn craft_tool(kind: ToolKind, name: &str) -> Result<ToolDefinition> {
@@ -303,35 +343,6 @@ fn enrich_status_workspaces(statuses: &mut [ToolStatus]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn build_statuses(bench: &Bench) -> Result<Vec<ToolStatus>> {
-    let tool_records = read_tool_records(bench)?;
-    let window_map = sway::current_windows()?
-        .into_iter()
-        .map(|w| (w.id.clone(), w))
-        .collect::<std::collections::HashMap<_, _>>();
-
-    let mut statuses = Vec::new();
-    for bay in &bench.bays {
-        for tool_name in &bay.tool_names {
-            let record = tool_records.get(tool_name);
-            let window_id = record.map(|r| r.window_id.clone());
-            let workspace = window_id
-                .as_ref()
-                .and_then(|id| window_map.get(id))
-                .and_then(|info| info.workspace.clone());
-
-            statuses.push(ToolStatus {
-                name: tool_name.clone(),
-                bay: bay.name.clone(),
-                window_id,
-                workspace,
-                launched: false,
-            });
-        }
-    }
-    Ok(statuses)
 }
 
 fn read_tool_records(bench: &Bench) -> Result<BTreeMap<String, AssembledTool>> {

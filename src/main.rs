@@ -19,8 +19,8 @@ mod sway;
 mod tool_ops;
 
 use bench_ops::{
-    active_bench, assemble_tool, craft_tool, create_bench, focus, info, list_benches, list_tools,
-    stow, sync_layout, sync_tool_state, BenchInfo, BenchReport, ToolStatus,
+    assemble_tool, craft_tool, create_bench, focus, focus_plan, focused_bench, info, list_benches,
+    list_tools, sync_layout, sync_tool_state, BenchInfo, BenchReport, ToolStatus,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
@@ -43,10 +43,15 @@ enum Commands {
     ListBenches,
     /// List known tools
     ListTools,
-    /// Stow a bench's windows into the scratchpad
-    Stow { bench: String },
     /// Focus a bench, restoring its layout
-    Focus { bench: String },
+    Focus {
+        bench: String,
+        #[arg(long)]
+        no_stow: bool,
+    },
+    /// Preview what focusing a bench will do
+    #[command(name = "focus-plan")]
+    FocusPlan { bench: String },
     /// Ensure a single tool is running
     #[command(name = "assemble-tool")]
     AssembleTool {
@@ -54,7 +59,7 @@ enum Commands {
         #[arg(long)]
         bay: Option<String>,
     },
-    /// Sync the active bench layout back to disk
+    /// Sync the focused bench layout back to disk
     #[command(name = "sync-layout")]
     SyncLayout,
     /// Sync tool state back to disk (tabs, etc.)
@@ -67,8 +72,8 @@ enum Commands {
     Info { bench: String },
     /// Launch the optional GTK launcher UI
     Launcher,
-    /// Print the currently active bench name, if any
-    Active,
+    /// Print the currently focused bench name, if any
+    Focused,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -155,33 +160,23 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Stow { bench } => {
-            println!(
-                "{} {}",
-                "🧳".bold().bright_blue(),
-                format!("Stowing bench '{}' into the scratchpad…", bench).bold()
-            );
-            let report = stow(&bench)?;
-            println!(
-                "{} {}",
-                "✨".bold().bright_magenta(),
-                format!("Bench '{}' tucked away!", bench).bold()
-            );
-            print_bench_report(&report);
-        }
-        Commands::Focus { bench } => {
+        Commands::Focus { bench, no_stow } => {
             println!(
                 "{} {}",
                 "🎯".bold().bright_green(),
                 format!("Bringing bench '{}' into focus…", bench).bold()
             );
-            let report = focus(&bench)?;
+            let report = focus(&bench, !no_stow)?;
             println!(
                 "{} {}",
                 "👀".bold().bright_cyan(),
                 format!("Bench '{}' is front-and-center!", bench).bold()
             );
             print_bench_report(&report);
+        }
+        Commands::FocusPlan { bench } => {
+            let plan = focus_plan(&bench)?;
+            print!("{}", plan);
         }
         Commands::AssembleTool { tool, bay } => {
             println!(
@@ -196,7 +191,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::SyncLayout => {
             let _assembled = sync_layout()?;
-            let bench_name = active_bench()?.ok_or_else(|| anyhow::anyhow!("no active bench"))?;
+            let bench_name = focused_bench()?.ok_or_else(|| anyhow::anyhow!("no focused bench"))?;
             println!(
                 "{} {}",
                 "🧭".bold().bright_cyan(),
@@ -230,16 +225,16 @@ fn main() -> anyhow::Result<()> {
         Commands::Launcher => {
             launcher_ui::run()?;
         }
-        Commands::Active => match active_bench()? {
+        Commands::Focused => match focused_bench()? {
             Some(name) => println!(
                 "{} {}",
                 "🎯".bold().bright_green(),
-                format!("Active bench: {}", name).bold()
+                format!("Focused bench: {}", name).bold()
             ),
             None => println!(
                 "{} {}",
                 "💤".bold().bright_black(),
-                "No bench is currently active.".dimmed()
+                "No bench is currently focused.".dimmed()
             ),
         },
     }
@@ -286,13 +281,13 @@ fn print_bench_info(info: &BenchInfo) {
     heading("🧾", &format!("Bench {}", info.bench.name));
 
     state_line(
-        if info.active { "🎯" } else { "💤" },
-        if info.active {
-            "Active: yes"
+        if info.focused { "🎯" } else { "💤" },
+        if info.focused {
+            "Focused: yes"
         } else {
-            "Active: no"
+            "Focused: no"
         },
-        info.active,
+        info.focused,
     );
     state_line(
         if info.assembled { "✅" } else { "⚠️" },
@@ -318,7 +313,7 @@ fn print_bench_info(info: &BenchInfo) {
 fn print_tool_status(status: &ToolStatus) {
     let has_window = status.window_id.is_some();
     let icon = if has_window {
-        if status.launched {
+        if status.assembled {
             format!("{}", "🚀".bold().bright_green())
         } else {
             format!("{}", "✅".bold().bright_green())
@@ -345,15 +340,15 @@ fn print_tool_status(status: &ToolStatus) {
         icon, name, at, bay, arrow, window_text, workspace_text
     );
 
-    if status.launched {
+    if status.assembled {
         println!(
             "    {}",
-            "✨ Launched during this command; we'll reuse it next time.".dimmed()
+            "✨ Assembled during this command; we'll reuse it next time.".dimmed()
         );
     } else if !has_window {
         println!(
             "    {}",
-            "🔁 Window missing; the next assemble will relaunch this tool.".dimmed()
+            "🔁 Window missing; the next assemble will reassemble this tool.".dimmed()
         );
     }
 }

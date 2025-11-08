@@ -34,8 +34,8 @@ pub fn assembled_tools_dir() -> PathBuf {
     data_dir().join("assembled-tools")
 }
 
-pub fn active_bench_path() -> PathBuf {
-    data_dir().join("active-bench")
+pub fn focused_bench_path() -> PathBuf {
+    data_dir().join("focused-bench")
 }
 
 pub fn ensure_dirs() -> Result<()> {
@@ -142,13 +142,13 @@ pub fn write_assembled_tool(name: &str, tool: &AssembledTool) -> Result<()> {
     write_json(&path, tool)
 }
 
-pub fn read_active_bench() -> Result<Option<String>> {
-    let path = active_bench_path();
+pub fn read_focused_bench() -> Result<Option<String>> {
+    let path = focused_bench_path();
     if !path.exists() {
         return Ok(None);
     }
     let data = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read active bench {}", path.display()))?;
+        .with_context(|| format!("failed to read focused bench {}", path.display()))?;
     let name = data.trim().to_string();
     if name.is_empty() {
         Ok(None)
@@ -157,11 +157,11 @@ pub fn read_active_bench() -> Result<Option<String>> {
     }
 }
 
-pub fn write_active_bench(name: &str) -> Result<()> {
-    let path = active_bench_path();
+pub fn write_focused_bench(name: &str) -> Result<()> {
+    let path = focused_bench_path();
     ensure_parent(&path)?;
     fs::write(&path, name)
-        .with_context(|| format!("failed to write active bench {}", path.display()))
+        .with_context(|| format!("failed to write focused bench {}", path.display()))
 }
 
 fn read_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
