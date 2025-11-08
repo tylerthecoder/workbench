@@ -1,6 +1,18 @@
-# Bench (Rust)
+# Bench
 
-Sway-first reimplementation of Bench in Rust. Manages “benches” of tools and places them into named Sway bays. Supports Chromium, Kitty, and Zed.
+A workspace manager system for sway.
+
+## Why?
+
+Your work involves multiple projects—a game you're coding, a paper you're researching, a side project you're building. Each project needs specific tools in specific arrangements: browser tabs for documentation, terminals in the right directories, editors with the right files open. Traditional window managers make you rebuild these layouts manually every time you switch between projects.
+
+**Bench treats GUI workspaces like tmux treats terminal sessions.**
+
+Define a "bench" for each project or context. Add tools to it by launching them from the menu. Move them around with normal sway commands. Switch to a different bench and the window state is saved into the scratchpad. Reboot your computer without loosing the state of the windows!
+
+**Tool state persists to disk.** When you focus a bench, missing tools are relaunched with their saved state—your browser reopens with the exact same tabs, your terminals land in the right directories, your editors load the right projects. Close everything, restart your machine, focus the bench again—it all comes back. You're not just saving window positions; you're saving the entire application state.
+
+**No manual window management.** You define your contexts once, then switch between them with a single command. The system handles launching, positioning, and tracking everything. Your mental energy goes into your work, not into arranging windows.
 
 ## Requirements
 
@@ -14,118 +26,254 @@ Sway-first reimplementation of Bench in Rust. Manages “benches” of tools and
 cargo build --release
 ```
 
-Binary: `target/release/bench`
-
-To install system-wide:
-
+Install
 ```bash
 cargo install --path .
 ```
-
-## Terms
-
-- **Bench**: A named collection of bays and the tools assigned to each bay.
-- **Bay**: A named target in Sway (for example `1: Home`) where Bench places windows.
-- **Tool**: A reusable description of how to launch an application (browser, terminal, Zed, etc.).
 
 ## Config
 
 Bench follows the XDG base directory spec for persisted data. We refer to the resolved data directory as `$BENCH_STATE` throughout the docs (defaults to `~/.local/share/bench`).
 
-## Bench
+All state lives under `$BENCH_STATE`:
+- `benches/` - Bench definitions (YAML)
+- `tools/` - Tool definitions (YAML)
+- `assembled-benches/` - Current window layouts (JSON)
+- `assembled-tools/` - Tracked window IDs (JSON)
+- `active-bench` - Currently active bench name (text file)
 
-Bench specifications live under `$BENCH_STATE/benches/<name>.yml`. With the default `$BENCH_STATE=~/.local/share/bench`, you might have:
+---
 
+## Tools
+
+A **tool** is a reusable application configuration. It defines:
+- What kind of app it is (browser, terminal, or zed)
+- What state it should launch with (URLs, working directory, project path, etc.)
+
+Tools are defined once and can be reused across multiple benches. They live in `$BENCH_STATE/tools/<tool-name>.yml`.
+
+### Example Tool Definitions
+
+**Browser tool** (`$BENCH_STATE/tools/research-browser.yml`):
 ```yml
-name: Home
-bays:
-  - name: "1: Home"
-    tool_names:
-      - home-browser
-      - home-chat
-  - name: "2: Notes"
-    tool_names:
-      - notes-zed
-  - name: "3: Terminal"
-    tool_names:
-      - work-term
-```
-
-Each bay name maps directly to a named target in Sway; numeric prefixes are optional but recommended when you want consistent ordering. Benches do not embed tool definitions—they reference shared tool names. When you focus a bench, every bay name is re-applied by renaming the corresponding bays so the layout stays synchronized.
-
-Bench assembly data is stored as JSON under `$BENCH_STATE/assembled-benches/<bench>.json`. Each record captures a mapping from bay names to the window IDs currently associated with that bay. This lets Bench remember which containers belong to the bench between sessions without duplicating the bench specification itself.
-
-Use `bench create <bench-name>` to scaffold a new bench specification and `bench list-benches` to discover existing ones. Inspect a specific spec with `bench info <bench-name>`, which prints the bench definition along with whether it is currently assembled or focused.
-
-## Tool
-
-Each tool is defined once under `$BENCH_STATE/tools/<tool>.yml`. These files map directly to the Rust `Tool` struct and can be reused across benches. Bay assignments always live in the bench specification—tool definitions focus solely on how to launch the application.
-
-Example tool definition (`$BENCH_STATE/tools/home-browser.yml`):
-
-```yml
-name: home-browser
+name: research-browser
 kind: browser
 state:
   urls:
-    - "https://tylertracy.com"
-    - "https://mail.google.com/"
+    - "https://scholar.google.com"
+    - "https://arxiv.org"
+    - "https://github.com/myorg/research-notes"
 ```
 
-Terminal and Zed tools follow the same format, using their respective configuration payloads.
+**Terminal tool** (`$BENCH_STATE/tools/dev-terminal.yml`):
+```yml
+name: dev-terminal
+kind: terminal
+state:
+  working_directory: "/home/user/projects/myapp"
+  command: "nvim src/main.rs"
+```
 
-Assembled tool data is stored as JSON under `$BENCH_STATE/assembled-tools/<tool>.json`. Each record currently tracks the observed `window_id` for that tool so we can reuse the same container instead of relaunching it—no other metadata is stored. Launch or refresh a single tool with `bench assemble-tool <tool-name>`. This command updates the currently focused bench if one is set. If the tool isn’t assembled yet, the file is absent until we observe it.
+**Zed tool** (`$BENCH_STATE/tools/code-editor.yml`):
+```yml
+name: code-editor
+kind: zed
+state:
+  projects:
+    - "/home/user/projects/myapp"
+```
 
-## Crafting a Tool
+### Crafting Tools
 
-Use `bench craft-tool <tool-kind> <name>` to create a YAML stub in `$BENCH_STATE/tools/<name>.yml` with sensible defaults for the requested kind (`browser`, `terminal`, or `zed`).
+Create a new tool with sensible defaults:
 
-## Assembling a Tool
+```bash
+bench craft-tool browser research-browser
+bench craft-tool terminal dev-terminal
+bench craft-tool zed code-editor
+```
 
-Assembling a tool means the tool has an active window on your machine with a known Sway `container_id`. When you open a tool through Bench, the tool’s JSON file in `$BENCH_STATE/assembled-tools/` is updated with its `window_id` so it can be reused instead of relaunched.
+This scaffolds a YAML file in `$BENCH_STATE/tools/` with default state for that tool kind. Edit the file to customize the tool's behavior.
 
-## Assemble a Bench
+**GUI:** The launcher UI (if built with `--features launcher-ui`) doesn't currently support creating tools—use the CLI for now.
 
-Assembling a bench means ensuring each tool defined in the bench has an open window. During assembly we:
+### Assembling Tools
 
-- Launch tools that aren’t currently assembled.
-- Reuse existing tool containers when possible.
-- Record a map of `tool_name -> window_id` under `$BENCH_STATE/assembled-tools/` for quick reuse.
-- Update `$BENCH_STATE/assembled-benches/<bench>.json` with a plain mapping of bay names to the window IDs currently tied to each bay. This includes unmanaged windows that you grouped with the bench manually, and no extra metadata is stored.
+**Assembling** a tool means ensuring it has a running window with a known Sway container ID.
 
-Run `bench assemble <bench-name>` to perform these steps. Assembling does *not* move windows; it only guarantees they exist and that their IDs are tracked.
+When you assemble a tool:
+1. Bench checks if the tool already has a tracked window that still exists
+2. If not, it searches for an existing window matching the tool's pattern
+3. If none found, it launches the tool with its saved state
+4. The window ID is saved to `$BENCH_STATE/assembled-tools/<tool-name>.json`
 
-## Stowing a Bench
+Assemble a single tool:
 
-Stowing a window simply moves it into the Sway scratchpad while leaving the process running. `bench stow <bench-name>` applies that to every window tied to the bench and keeps the JSON records in `$BENCH_STATE/assembled-benches/` up to date.
+```bash
+bench assemble-tool research-browser --bay "1: Research"
+```
 
-## Focusing a Bench
+**GUI:** Not directly exposed—tools are assembled automatically when you focus a bench.
 
-Focusing a bench:
+### Tool State Sync
 
-- Stows whatever windows are currently visible, except for windows that already belong to the bench and are already in the right bay.
-- Ensures the target bench is assembled (launching any missing tools).
-- Moves each window recorded in the bench’s assembled JSON back to its bay, preserving the layout instead of collapsing into a single view.
-- Renames those bays to match the bench’s bay names.
-- Marks this bench as the active bench so future sync commands know which layout to observe.
+As you work, your tools accumulate state changes—browser tabs open/close, terminal directories change. Capture this state back to the tool definitions:
 
-Bring a bench into view with `bench focus <bench-name>`. Check its current state at any time with `bench info <bench-name>`.
+```bash
+bench sync-tool-state
+```
 
-## Syncing Benches
+This updates the YAML files in `$BENCH_STATE/tools/` with current runtime state. For browsers, it captures all open tabs via the Chrome DevTools Protocol. For terminals and Zed, state syncing isn't implemented yet but is planned.
 
-You can sync the current state of the bench to the bench specification. Syncing gathers data from running tools (for example, capturing Chromium tabs) and merges it into the bench YAML. In practice, it’s helpful to save every few minutes. You can choose to sync just the layout (bay assignments) or the tool state payloads. Use `bench sync-layout` or `bench sync-tool-state` against the currently focused bench.
+**GUI:** Press `Ctrl+Shift+S` in the launcher to sync tool state.
+
+### Where Tool Data Lives
+
+- **Definition:** `$BENCH_STATE/tools/<tool-name>.yml` - What the tool is and its persistent state
+- **Assembly tracking:** `$BENCH_STATE/assembled-tools/<tool-name>.json` - Which window ID currently represents this tool (e.g., `{"window_id": "12345"}`)
+
+The assembly tracking file exists only while the tool is running. If you close the tool, the file remains but the window ID becomes stale. Next time you focus a bench that needs this tool, Bench will detect the stale ID and relaunch.
+
+---
+
+## Benches
+
+A **bench** is a collection of tools organized into **bays**. A bay is a named Sway workspace where tools are placed.
+
+Benches are defined in `$BENCH_STATE/benches/<bench-name>.yml`.
+
+### Example Bench
+
+**`$BENCH_STATE/benches/research.yml`:**
+```yml
+name: research
+bays:
+  - name: "1: Browser"
+    tool_names:
+      - research-browser
+  - name: "2: Notes"
+    tool_names:
+      - notes-zed
+      - notes-terminal
+  - name: "3: Papers"
+    tool_names:
+      - pdf-viewer
+```
+
+Each bay name corresponds to a Sway workspace. Tools listed under a bay will be launched and placed in that workspace when you focus the bench.
+
+### Creating Benches
+
+```bash
+bench create research
+```
+
+This creates an empty bench specification at `$BENCH_STATE/benches/research.yml`. Edit the file to add bays and tools.
+
+**GUI:** The launcher shows all available benches but doesn't support creating new ones—use the CLI.
+
+### Listing Benches
+
+```bash
+bench list-benches
+```
+
+**GUI:** The launcher displays all benches in a filterable list.
+
+### Viewing Bench Info
+
+```bash
+bench info research
+```
+
+Shows:
+- Whether the bench is currently active
+- Whether all tools are assembled (running)
+- Status of each tool: window ID, workspace location, whether it was recently launched
+
+**GUI:** Select a bench in the launcher and press `i` (planned feature).
+
+### Focusing a Bench
+
+**Focusing** is the main operation. It activates a bench and brings all its tools into view.
+
+```bash
+bench focus research
+```
+
+What happens:
+1. **Save current state:** If another bench is active, its current layout is saved to disk
+2. **Ensure tools exist:** All tools defined in the target bench are launched if not already running
+3. **Stow other windows:** Windows not belonging to the bench are moved to the scratchpad
+4. **Restore layout:** Windows are moved to their designated bay workspaces
+5. **Mark active:** This bench becomes the active bench
+
+**GUI:** Select a bench and press `Enter`, or double-click.
+
+### Stowing a Bench
+
+**Stowing** hides a bench's windows without closing them.
+
+```bash
+bench stow research
+```
+
+All windows belonging to the bench are moved to the scratchpad. The processes keep running—you can focus the bench again later to restore them.
+
+**GUI:** Select a bench and press `Shift+Enter`.
+
+### Syncing Bench Layout
+
+As you rearrange windows, move them between workspaces, or open new tools manually, you'll want to capture the current arrangement:
+
+```bash
+bench sync-layout
+```
+
+This saves the current window-to-bay mapping to `$BENCH_STATE/assembled-benches/<bench-name>.json`. Next time you focus the bench, windows will be restored to these positions.
+
+**Note:** This only syncs which windows are in which bays. To sync tool state (browser tabs, etc.), use `bench sync-tool-state`.
+
+**GUI:** Press `Ctrl+S` in the launcher.
+
+### Active Bench
+
+Check which bench is currently active:
+
+```bash
+bench active
+```
+
+**GUI:** The active bench is highlighted in the launcher.
+
+### Where Bench Data Lives
+
+- **Definition:** `$BENCH_STATE/benches/<bench-name>.yml` - The bench structure: which tools go in which bays
+- **Assembled layout:** `$BENCH_STATE/assembled-benches/<bench-name>.json` - Current window arrangement (e.g., `{"1: Browser": ["12345", "67890"], "2: Notes": ["11111"]}`)
+- **Active bench:** `$BENCH_STATE/active-bench` - Name of the currently focused bench
+
+---
 
 ## Launcher UI
 
 `bench launcher` (built with `--features launcher-ui`) opens a fast, keyboard-first GTK window for switching benches:
 
-- Search: start typing to filter bench names; `Esc` clears or closes.
-- Navigation: arrow keys move the selection; `Tab` toggles between search and list.
-- Actions: `Enter` assembles the selected bench, `Shift+Enter` stows it, and `Ctrl+S` syncs the current arrangement back to disk.
-- Status: the footer shows the last action result; errors bubble up in the same bar.
+- **Search:** Start typing to filter bench names; `Esc` clears or closes
+- **Navigation:** Arrow keys move the selection; `Tab` toggles between search and list
+- **Actions:**
+  - `Enter` - Focus the selected bench
+  - `Shift+Enter` - Stow the selected bench
+  - `Ctrl+S` - Sync the current layout
+- **Status:** The footer shows the last action result; errors bubble up in the same bar
 
-When running from the repository, you can start the launcher with:
+When running from the repository:
 
 ```bash
 cargo run --features launcher-ui -- launcher
+```
+
+Bind this to a hotkey in your Sway config for instant access:
+
+```
+bindsym $mod+Space exec /path/to/bench launcher
 ```

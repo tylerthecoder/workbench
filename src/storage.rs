@@ -90,6 +90,22 @@ pub fn list_bench_names() -> Result<Vec<String>> {
     Ok(benches)
 }
 
+pub fn list_tool_names() -> Result<Vec<String>> {
+    let mut tools = Vec::new();
+    if let Ok(entries) = fs::read_dir(tools_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("yml") {
+                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                    tools.push(name.to_string());
+                }
+            }
+        }
+    }
+    tools.sort();
+    Ok(tools)
+}
+
 pub fn read_tool(name: &str) -> Result<ToolDefinition> {
     let path = tool_path(name);
     read_yaml(&path)

@@ -14,6 +14,7 @@ anyhow = "1"
 gtk4 = { version = "0.7", package = "gtk4", optional = true }
 ureq = { version = "2", features = ["json"] }
 dialoguer = "0.11"
+owo-colors = { version = "3", features = ["supports-colors"] }
 
 [features]
 default = []
