@@ -1,17 +1,6 @@
 mod apps;
 mod bench_ops;
-#[cfg(feature = "launcher-ui")]
 mod launcher_ui;
-#[cfg(not(feature = "launcher-ui"))]
-mod launcher_ui {
-    use anyhow::{anyhow, Result};
-
-    pub fn run() -> Result<()> {
-        Err(anyhow!(
-            "launcher UI disabled; rebuild with `--features launcher-ui`"
-        ))
-    }
-}
 mod layout_ops;
 mod model;
 mod storage;
@@ -19,8 +8,9 @@ mod sway;
 mod tool_ops;
 
 use bench_ops::{
-    assemble_tool, craft_tool, create_bench, focus, focus_plan, focused_bench, info, list_benches,
-    list_tools, sync_layout, sync_tool_state, BenchInfo, BenchReport, ToolStatus,
+    add_tool_to_bench, assemble_tool, craft_tool, create_bench, focus, focus_plan, focused_bench,
+    info, list_benches, list_tools, sync_layout, sync_tool_state, BenchInfo, BenchReport,
+    ToolStatus,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
@@ -63,6 +53,17 @@ enum BenchCommands {
     List,
     /// Create a new bench
     Create { name: String },
+    /// Add a tool to a bench
+    #[command(name = "add-tool")]
+    AddTool {
+        /// Name of the bench
+        bench: String,
+        /// Name of the tool to add
+        tool: String,
+        /// Bay to add the tool to
+        #[arg(long)]
+        bay: String,
+    },
     /// Focus a bench, restoring its layout
     Focus {
         name: String,
@@ -160,6 +161,18 @@ fn main() -> anyhow::Result<()> {
                     "Edit the JSON to add bays whenever you're ready!".dimmed()
                 );
             }
+            BenchCommands::AddTool { bench, tool, bay } => {
+                add_tool_to_bench(&bench, &tool, &bay)?;
+                println!(
+                    "{} {}",
+                    "➕".bold().bright_green(),
+                    format!(
+                        "Added tool '{}' to bench '{}' in bay '{}'",
+                        tool, bench, bay
+                    )
+                    .bold()
+                );
+            }
             BenchCommands::Focus { name, no_stow } => {
                 println!(
                     "{} {}",
@@ -183,7 +196,7 @@ fn main() -> anyhow::Result<()> {
                 print_bench_info(&details);
             }
             BenchCommands::Sync => {
-                let _assembled = sync_layout()?;
+                let diff = sync_layout()?;
                 let bench_name =
                     focused_bench()?.ok_or_else(|| anyhow::anyhow!("no focused bench"))?;
                 println!(
@@ -191,6 +204,49 @@ fn main() -> anyhow::Result<()> {
                     "🧭".bold().bright_cyan(),
                     format!("Captured current layout for '{}'.", bench_name).bold()
                 );
+
+                // Show what changed
+                if !diff.added_windows.is_empty() {
+                    println!(
+                        "\n{} {}",
+                        "➕".bold().bright_green(),
+                        "Added windows:".bold()
+                    );
+                    for (workspace, window_id) in &diff.added_windows {
+                        println!(
+                            "  {} {} {} {}",
+                            "•".bright_cyan(),
+                            workspace.bold().bright_blue(),
+                            "→".bright_black(),
+                            window_id.bright_green()
+                        );
+                    }
+                }
+
+                if !diff.removed_windows.is_empty() {
+                    println!(
+                        "\n{} {}",
+                        "➖".bold().bright_red(),
+                        "Removed windows:".bold()
+                    );
+                    for (workspace, window_id) in &diff.removed_windows {
+                        println!(
+                            "  {} {} {} {}",
+                            "•".bright_cyan(),
+                            workspace.bold().bright_blue(),
+                            "→".bright_black(),
+                            window_id.dimmed()
+                        );
+                    }
+                }
+
+                if diff.added_windows.is_empty() && diff.removed_windows.is_empty() {
+                    println!(
+                        "\n{} {}",
+                        "✓".bold().bright_green(),
+                        "No changes detected.".dimmed()
+                    );
+                }
             }
             BenchCommands::Focused => match focused_bench()? {
                 Some(name) => println!(
@@ -266,7 +322,7 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Launcher => {
-            launcher_ui::run()?;
+            launcher_ui::run(storage::benches_dir())?;
         }
     }
     Ok(())
@@ -338,6 +394,44 @@ fn print_bench_info(info: &BenchInfo) {
     section("🛠️", "Tools");
     for status in &info.statuses {
         print_tool_status(status);
+    }
+
+    // Show current windows if bench is focused
+    if info.focused && !info.current_windows.is_empty() {
+        println!();
+        section("🪟", "Current Windows");
+        for window in &info.current_windows {
+            let ws_name = window.workspace.as_deref().unwrap_or("<no workspace>");
+            let ws = format!("{}", ws_name.italic().bright_blue());
+            let window_id = format!("{}", window.id.bright_green());
+            println!(
+                "  {} {} {} {}",
+                "•".bright_cyan(),
+                window_id,
+                "→".bright_black(),
+                ws
+            );
+        }
+    }
+
+    // Show saved layout
+    if let Some(ref layout) = info.saved_layout {
+        if !layout.bay_windows.is_empty() {
+            println!();
+            section("💾", "Saved Layout");
+            for (bay_name, window_ids) in &layout.bay_windows {
+                println!(
+                    "  {} {} {} window{}",
+                    "•".bright_cyan(),
+                    bay_name.bold().bright_blue(),
+                    window_ids.len(),
+                    if window_ids.len() == 1 { "" } else { "s" }
+                );
+                for window_id in window_ids {
+                    println!("     {} {}", "→".bright_black(), window_id.dimmed());
+                }
+            }
+        }
     }
 }
 

@@ -7,14 +7,27 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let output = Command::new("swaymsg")
-        .args(args.into_iter().map(|s| s.as_ref().to_string()))
-        .output()?;
+    let args_vec: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+    let output = Command::new("swaymsg").args(&args_vec).output()?;
     if !output.status.success() {
-        anyhow::bail!(
-            "swaymsg failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut error_msg = format!(
+            "swaymsg command failed\n  Command: swaymsg {}\n  Exit code: {}",
+            args_vec.join(" "),
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         );
+        if !stderr.is_empty() {
+            error_msg.push_str(&format!("\n  Stderr: {}", stderr.trim()));
+        }
+        if !stdout.is_empty() {
+            error_msg.push_str(&format!("\n  Stdout: {}", stdout.trim()));
+        }
+        anyhow::bail!(error_msg);
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -40,12 +53,6 @@ pub fn move_container_to_workspace(container_id: &str, workspace: &str) -> anyho
         "workspace",
         workspace,
     ])?;
-    Ok(())
-}
-
-pub fn move_container_to_scratchpad(container_id: &str) -> anyhow::Result<()> {
-    let selector = format!("[con_id=\"{}\"]", container_id);
-    let _ = run_sway([selector.as_str(), "move", "container", "to", "scratchpad"])?;
     Ok(())
 }
 
@@ -148,6 +155,7 @@ pub struct WindowInfo {
 }
 
 fn collect_windows(v: &Value, current_ws: &mut Option<String>, out: &mut Vec<WindowInfo>) {
+    // Track workspace context as we traverse
     if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
         if t == "workspace" {
             *current_ws = v
@@ -155,7 +163,26 @@ fn collect_windows(v: &Value, current_ws: &mut Option<String>, out: &mut Vec<Win
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string());
         }
+
+        // Skip non-window container types
+        if matches!(t, "root" | "output" | "workspace" | "dockarea") {
+            // Don't collect this node as a window, but continue traversing children
+            if let Some(nodes) = v.get("nodes").and_then(|x| x.as_array()) {
+                for n in nodes {
+                    let mut ws = current_ws.clone();
+                    collect_windows(n, &mut ws, out);
+                }
+            }
+            if let Some(fnodes) = v.get("floating_nodes").and_then(|x| x.as_array()) {
+                for n in fnodes {
+                    let mut ws = current_ws.clone();
+                    collect_windows(n, &mut ws, out);
+                }
+            }
+            return;
+        }
     }
+
     let id = v.get("id").and_then(|x| x.as_i64()).map(|x| x.to_string());
     let app_id = v
         .get("app_id")
@@ -167,13 +194,17 @@ fn collect_windows(v: &Value, current_ws: &mut Option<String>, out: &mut Vec<Win
         .and_then(|x| x.as_str())
         .map(|s| s.to_string());
     if let Some(id) = id {
-        // Heuristic: consider a node a window if it has title and (app_id or class) or has window field
+        // Consider a node a window if it has a window property (X11 window ID)
+        // or if it has both an app_id/class and a name (title)
         let title = v
             .get("name")
             .and_then(|x| x.as_str())
             .map(|s| s.to_string());
-        let is_window =
-            v.get("window").is_some() || title.is_some() && (app_id.is_some() || class.is_some());
+        let has_window_prop = v.get("window").is_some();
+        let has_app_identity = app_id.is_some() || class.is_some();
+
+        let is_window = has_window_prop || (has_app_identity && title.is_some());
+
         if is_window {
             out.push(WindowInfo {
                 id,
@@ -181,6 +212,8 @@ fn collect_windows(v: &Value, current_ws: &mut Option<String>, out: &mut Vec<Win
             });
         }
     }
+
+    // Continue traversing for child nodes
     if let Some(nodes) = v.get("nodes").and_then(|x| x.as_array()) {
         for n in nodes {
             let mut ws = current_ws.clone();

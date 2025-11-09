@@ -30,45 +30,47 @@ pub fn collect_bench_windows(bench: &Bench) -> Result<HashSet<String>> {
     Ok(window_ids)
 }
 
-/// Move all non-bench windows to scratchpad
-pub fn stow_foreign_windows(bench_window_ids: &HashSet<String>) -> Result<()> {
+/// Get list of windows that should be stowed (moved to temp workspace)
+/// Returns windows that are not part of the bench and not already stowed
+pub fn get_windows_to_stow(bench_window_ids: &HashSet<String>) -> Result<Vec<sway::WindowInfo>> {
     let all_windows = sway::current_windows()?;
+    let mut windows_to_stow = Vec::new();
 
     for window in all_windows {
+        // Skip windows that belong to the bench
         if bench_window_ids.contains(&window.id) {
             continue;
         }
 
-        // Skip scratchpad windows
+        // Skip windows already in stowed workspaces (temp/scratchpad)
         if let Some(ref ws) = window.workspace {
-            if ws == "__i3_scratch" {
+            if crate::bench_ops::is_stowed_workspace(ws) {
                 continue;
             }
         }
 
-        sway::move_container_to_scratchpad(&window.id)?;
+        windows_to_stow.push(window);
     }
 
-    Ok(())
+    Ok(windows_to_stow)
 }
 
-/// Restore bench windows to their saved layout
-pub fn restore_bench_layout(bench: &Bench, assembled: &AssembledBench) -> Result<()> {
-    // For each bay in the bench, move its windows to the bay workspace
-    for bay in &bench.bays {
-        if let Some(window_ids) = assembled.bay_windows.get(&bay.name) {
-            for window_id in window_ids {
-                // Check if window still exists
-                if sway::container_exists(window_id)? {
-                    // Move to the bay's workspace
-                    sway::move_container_to_workspace(window_id, &bay.name)?;
-                }
+/// Restore windows to their saved layout
+/// Takes an AssembledBench and moves each window back to its saved workspace
+pub fn restore_bench_layout(assembled: &AssembledBench) -> Result<()> {
+    // For each workspace, restore its windows
+    for (workspace, window_ids) in &assembled.bay_windows {
+        for window_id in window_ids {
+            // Check if window still exists
+            if sway::container_exists(window_id)? {
+                // Move to the saved workspace
+                sway::move_container_to_workspace(window_id, workspace)?;
             }
+        }
 
-            // Make sure the workspace is visible if it has windows
-            if !window_ids.is_empty() {
-                sway::ensure_workspace_visible(&bay.name)?;
-            }
+        // Make sure the workspace is visible if it has windows
+        if !window_ids.is_empty() {
+            sway::ensure_workspace_visible(workspace)?;
         }
     }
 
@@ -76,46 +78,24 @@ pub fn restore_bench_layout(bench: &Bench, assembled: &AssembledBench) -> Result
 }
 
 /// Capture current window positions into AssembledBench structure
-/// Queries sway for all windows, matches them to bench tools, and creates
-/// an AssembledBench with bay_windows mapping bay name -> window IDs
-pub fn capture_current_layout(bench: &Bench) -> Result<AssembledBench> {
+/// Captures ALL windows grouped by their current workspace
+/// This preserves the entire workspace state, including untracked windows
+pub fn capture_current_layout() -> Result<AssembledBench> {
     let mut bay_windows: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     // Get all current windows with their workspace info
     let all_windows = sway::current_windows()?;
 
-    // Build a map of tool_name -> window_id for tools in this bench
-    let mut tool_to_window = BTreeMap::new();
-    for bay in &bench.bays {
-        for tool_name in &bay.tool_names {
-            if let Some(assembled) = storage::read_assembled_tool(tool_name)? {
-                if sway::container_exists(&assembled.window_id)? {
-                    tool_to_window.insert(tool_name.clone(), assembled.window_id);
-                }
+    // Group windows by their workspace
+    for window in all_windows {
+        if let Some(workspace) = window.workspace {
+            // Skip stowed workspaces (temp/scratchpad)
+            if !crate::bench_ops::is_stowed_workspace(&workspace) {
+                bay_windows
+                    .entry(workspace)
+                    .or_insert_with(Vec::new)
+                    .push(window.id);
             }
-        }
-    }
-
-    // For each bay, find windows that belong to its tools and are in a workspace
-    for bay in &bench.bays {
-        let mut windows_in_bay = Vec::new();
-
-        for tool_name in &bay.tool_names {
-            if let Some(window_id) = tool_to_window.get(tool_name) {
-                // Find this window in the current windows list
-                if let Some(window_info) = all_windows.iter().find(|w| &w.id == window_id) {
-                    // If it's in a real workspace (not scratchpad), include it
-                    if let Some(ref ws) = window_info.workspace {
-                        if ws != "__i3_scratch" {
-                            windows_in_bay.push(window_id.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        if !windows_in_bay.is_empty() {
-            bay_windows.insert(bay.name.clone(), windows_in_bay);
         }
     }
 
