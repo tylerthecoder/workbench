@@ -31,6 +31,14 @@ pub struct BenchInfo {
     pub assembled: bool,
     pub focused: bool,
     pub statuses: Vec<ToolStatus>,
+    pub current_windows: Vec<sway::WindowInfo>,
+    pub saved_layout: Option<AssembledBench>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LayoutDiff {
+    pub added_windows: Vec<(String, String)>, // (workspace, window_id)
+    pub removed_windows: Vec<(String, String)>, // (workspace, window_id)
 }
 
 pub fn create_bench(name: &str) -> Result<Bench> {
@@ -49,6 +57,38 @@ pub fn create_bench(name: &str) -> Result<Bench> {
     };
     storage::write_bench(&bench)?;
     Ok(bench)
+}
+
+pub fn add_tool_to_bench(bench_name: &str, tool_name: &str, bay_name: &str) -> Result<()> {
+    storage::ensure_dirs()?;
+
+    // Verify the tool exists
+    let _tool =
+        storage::read_tool(tool_name).with_context(|| format!("tool '{}' not found", tool_name))?;
+
+    // Load the bench
+    let mut bench = storage::read_bench(bench_name)
+        .with_context(|| format!("bench '{}' not found", bench_name))?;
+
+    // Find or create the bay
+    let bay = bench.bays.iter_mut().find(|b| b.name == bay_name);
+
+    if let Some(bay) = bay {
+        // Check if tool is already in this bay
+        if bay.tool_names.contains(&tool_name.to_string()) {
+            anyhow::bail!("tool '{}' is already in bay '{}'", tool_name, bay_name);
+        }
+        bay.tool_names.push(tool_name.to_string());
+    } else {
+        // Create new bay with the tool
+        bench.bays.push(crate::model::BaySpec {
+            name: bay_name.to_string(),
+            tool_names: vec![tool_name.to_string()],
+        });
+    }
+
+    storage::write_bench(&bench)?;
+    Ok(())
 }
 
 pub fn list_benches() -> Result<Vec<String>> {
@@ -94,10 +134,11 @@ pub fn info(bench_name: &str) -> Result<BenchInfo> {
     let is_focused = focused.as_deref() == Some(&bench.name);
 
     let tool_records = read_tool_records(&bench)?;
-    let window_index = sway::current_windows()?
-        .into_iter()
-        .map(|w| (w.id.clone(), w))
-        .collect::<std::collections::HashMap<_, _>>();
+    let all_windows = sway::current_windows()?;
+    let window_index: std::collections::HashMap<_, _> = all_windows
+        .iter()
+        .map(|w| (w.id.clone(), w.clone()))
+        .collect();
 
     let mut statuses = Vec::new();
     let mut assembled = true;
@@ -126,12 +167,33 @@ pub fn info(bench_name: &str) -> Result<BenchInfo> {
         }
     }
 
+    // Filter to only include "active" windows (not in temp or scratchpad)
+    let active_windows = all_windows
+        .into_iter()
+        .filter(|w| {
+            if let Some(ref ws) = w.workspace {
+                !is_stowed_workspace(ws)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    // Load saved layout if it exists
+    let saved_layout = storage::read_assembled_bench(bench_name)?;
+
     Ok(BenchInfo {
         bench,
         assembled,
         focused: is_focused,
         statuses,
+        current_windows: active_windows,
+        saved_layout,
     })
+}
+
+pub(crate) fn is_stowed_workspace(workspace: &str) -> bool {
+    workspace == "temp" || workspace == "__i3_scratch"
 }
 
 pub fn focus(bench_name: &str, stow_others: bool) -> Result<BenchReport> {
@@ -144,8 +206,15 @@ pub fn focus(bench_name: &str, stow_others: bool) -> Result<BenchReport> {
     // 2. Save current bench state before switching
     if let Some(current) = storage::read_focused_bench()? {
         if current != bench_name {
+            println!("Saving layout for focused bench '{}' to disk", current);
             // Sync the current bench's layout to disk before we switch
-            let _ = sync_layout(); // Ignore errors if there's nothing to sync
+            let layout_diff = sync_layout()?; // Ignore errors if there's nothing to sync
+            for (workspace, window_id) in layout_diff.added_windows {
+                println!("Adding window {} to workspace {}", window_id, workspace);
+            }
+            for (workspace, window_id) in layout_diff.removed_windows {
+                println!("Removing window {} from workspace {}", window_id, workspace);
+            }
         }
     }
 
@@ -171,12 +240,15 @@ pub fn focus(bench_name: &str, stow_others: bool) -> Result<BenchReport> {
 
     // 5. Stow everything else (if requested)
     if stow_others {
-        layout_ops::stow_foreign_windows(&bench_windows)?;
+        let windows_to_stow = layout_ops::get_windows_to_stow(&bench_windows)?;
+        for window in windows_to_stow {
+            sway::move_container_to_workspace(&window.id, "temp")?;
+        }
     }
 
     // 6. Restore bench layout
     let assembled = storage::read_assembled_bench(bench_name)?.unwrap_or_default();
-    layout_ops::restore_bench_layout(&bench, &assembled)?;
+    layout_ops::restore_bench_layout(&assembled)?;
 
     // 7. Enrich statuses with current workspace info
     enrich_status_workspaces(&mut statuses)?;
@@ -227,20 +299,14 @@ pub fn focus_plan(bench_name: &str) -> Result<String> {
     // Check which windows will be stowed
     output.push_str("\nWindows to stow:\n");
     let bench_windows = layout_ops::collect_bench_windows(&bench)?;
-    let all_windows = sway::current_windows()?;
-    let mut has_stowed = false;
-    for window in &all_windows {
-        if !bench_windows.contains(&window.id) {
-            if let Some(ref ws) = window.workspace {
-                if ws != "__i3_scratch" {
-                    output.push_str(&format!("  → Window {} from workspace {}\n", window.id, ws));
-                    has_stowed = true;
-                }
-            }
-        }
-    }
-    if !has_stowed {
+    let windows_to_stow = layout_ops::get_windows_to_stow(&bench_windows)?;
+    if windows_to_stow.is_empty() {
         output.push_str("  (none)\n");
+    } else {
+        for window in &windows_to_stow {
+            let ws = window.workspace.as_deref().unwrap_or("<unknown>");
+            output.push_str(&format!("  → Window {} from workspace {}\n", window.id, ws));
+        }
     }
 
     // Show where bench windows will be placed
@@ -261,23 +327,62 @@ pub fn focus_plan(bench_name: &str) -> Result<String> {
     Ok(output)
 }
 
-pub fn sync_layout() -> Result<AssembledBench> {
+pub fn sync_layout() -> Result<LayoutDiff> {
     storage::ensure_dirs()?;
 
     // Get the currently focused bench
     let bench_name =
         storage::read_focused_bench()?.ok_or_else(|| anyhow!("no focused bench to sync"))?;
 
-    // Load the bench definition to know what tools/bays exist
-    let bench = storage::read_bench(&bench_name)?;
+    // Load old layout if it exists
+    let old_layout = storage::read_assembled_bench(&bench_name)?;
 
     // Capture current window state from sway
-    let assembled = layout_ops::capture_current_layout(&bench)?;
+    let new_layout = layout_ops::capture_current_layout()?;
+
+    // Calculate diff
+    let mut added_windows = Vec::new();
+    let mut removed_windows = Vec::new();
+
+    // Find added windows (in new but not in old)
+    for (workspace, window_ids) in &new_layout.bay_windows {
+        for window_id in window_ids {
+            let existed_before = old_layout
+                .as_ref()
+                .and_then(|old| old.bay_windows.get(workspace))
+                .map(|old_windows| old_windows.contains(window_id))
+                .unwrap_or(false);
+
+            if !existed_before {
+                added_windows.push((workspace.clone(), window_id.clone()));
+            }
+        }
+    }
+
+    // Find removed windows (in old but not in new)
+    if let Some(ref old) = old_layout {
+        for (workspace, window_ids) in &old.bay_windows {
+            for window_id in window_ids {
+                let exists_now = new_layout
+                    .bay_windows
+                    .get(workspace)
+                    .map(|new_windows| new_windows.contains(window_id))
+                    .unwrap_or(false);
+
+                if !exists_now {
+                    removed_windows.push((workspace.clone(), window_id.clone()));
+                }
+            }
+        }
+    }
 
     // Write to storage
-    storage::write_assembled_bench(&bench_name, &assembled)?;
+    storage::write_assembled_bench(&bench_name, &new_layout)?;
 
-    Ok(assembled)
+    Ok(LayoutDiff {
+        added_windows,
+        removed_windows,
+    })
 }
 
 pub fn sync_tool_state() -> Result<()> {
