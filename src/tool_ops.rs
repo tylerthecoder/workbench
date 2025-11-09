@@ -79,6 +79,7 @@ pub fn assemble_tool(tool_name: &str, bay: &str) -> Result<(String, bool)> {
     }
 
     let window_id = sway::wait_for_new_container(patterns, &before, Duration::from_secs(15))?;
+    sway::move_container_to_workspace(&window_id, bay)?;
 
     // Save the window ID
     storage::write_assembled_tool(
