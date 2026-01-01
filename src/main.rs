@@ -1,6 +1,5 @@
 mod apps;
 mod bench_ops;
-mod launcher_ui;
 mod layout_ops;
 mod model;
 mod storage;
@@ -43,8 +42,6 @@ enum Commands {
         #[command(subcommand)]
         command: ToolCommands,
     },
-    /// Launch the optional GTK launcher UI
-    Launcher,
 }
 
 #[derive(Subcommand, Debug)]
@@ -122,24 +119,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Bench { command } | Commands::B { command } => match command {
             BenchCommands::List => {
                 let benches = list_benches()?;
-                println!(
-                    "{} {}",
-                    "📚".bold().bright_magenta(),
-                    "Available benches".bold()
-                );
-                if benches.is_empty() {
-                    println!(
-                        "  {}",
-                        "No benches found. Try `yard bench create <name>` to get started!".dimmed()
-                    );
-                } else {
-                    for (idx, bench) in benches.iter().enumerate() {
-                        println!(
-                            "  {} {}",
-                            "•".bright_cyan(),
-                            format!("{:>2}. {}", idx + 1, bench).bold()
-                        );
-                    }
+                // Simple output format for easy parsing
+                for bench in benches.iter() {
+                    println!("{}", bench);
                 }
             }
             BenchCommands::Create { name } => {
@@ -264,25 +246,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Tool { command } => match command {
             ToolCommands::List => {
                 let tools = list_tools()?;
-                println!(
-                    "{} {}",
-                    "🧰".bold().bright_magenta(),
-                    "Available tools".bold()
-                );
-                if tools.is_empty() {
-                    println!(
-                        "  {}",
-                        "No tools found. Try `yard tool craft <kind> <name>` to scaffold one."
-                            .dimmed()
-                    );
-                } else {
-                    for (idx, tool) in tools.iter().enumerate() {
-                        println!(
-                            "  {} {}",
-                            "•".bright_cyan(),
-                            format!("{:>2}. {}", idx + 1, tool).bold()
-                        );
-                    }
+                // Simple output format for easy parsing
+                for tool in tools.iter() {
+                    println!("{}", tool);
                 }
             }
             ToolCommands::Craft { kind, name } => {
@@ -321,9 +287,6 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         },
-        Commands::Launcher => {
-            launcher_ui::run(storage::benches_dir())?;
-        }
     }
     Ok(())
 }
